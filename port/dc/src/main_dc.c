@@ -11,6 +11,22 @@ extern void AgbMain(void);
 extern u32 hal_max_frames;
 void hal_apply_code_ptr_fixups(void);
 
+/* Debug watchdog: a preemptive KOS thread that reports progress and where the game thread is.
+ * Map the PC to a function with build/klonoa-dc.map. */
+static kthread_t *game_thread;
+static void *watchdog(void *p) {
+    u32 last = 0;
+    (void)p;
+    for (;;) {
+        thd_sleep(2000);
+        hal_log("watchdog: frames=%lu (+%lu) game pc=%08lx pr=%08lx\n", (unsigned long)hal_frame_count,
+                (unsigned long)(hal_frame_count - last), (unsigned long)CONTEXT_PC(game_thread->context),
+                (unsigned long)game_thread->context.pr);
+        last = hal_frame_count;
+    }
+    return NULL;
+}
+
 int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
@@ -29,6 +45,8 @@ int main(int argc, char **argv) {
 #ifdef HAL_MAX_FRAMES
     hal_max_frames = HAL_MAX_FRAMES;
 #endif
+    game_thread = thd_get_current();
+    thd_create(true, watchdog, NULL);
     hal_log("klonoa-dc: entering AgbMain\n");
     AgbMain();
     return 0;

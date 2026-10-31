@@ -1,11 +1,16 @@
 /* Frame timing and interrupt emulation.
  *
- * On the GBA the game runs its logic during the visible frame and then calls the BIOS
- * VBlankIntrWait(), which returns after the VBlank interrupt handler has run. Here
- * VBlankIntrWait() *is* the hardware frame: draw the 160 visible lines (running HBlank DMA and
- * the game's HBlank/VCount handlers between lines exactly where the hardware would raise them),
- * enter VBlank (VBlank DMA, the game's VBlank handler), present, sync to the Dreamcast's own
- * vblank and poll the controller.
+ * The emulated "beam" is a line counter (0-227) advanced one scanline at a time by beam_step().
+ * Each visible line is rendered, then HBlank is entered: HBlank DMA, the game's VCount handler
+ * (if the line matches DISPSTAT's LYC -- raised here, after the line is drawn, because the game's
+ * VCount handlers spin until HBlank before touching registers), then its HBlank handler. Entering
+ * line 160 runs VBlank DMA and the game's VBlank handler.
+ *
+ * The beam only moves when the game waits for it:
+ *   - VBlankIntrWait() (BIOS) runs the beam to the start of VBlank, then presents the frame, syncs
+ *     to the Dreamcast's own vblank and polls the controller;
+ *   - hal_wait_vcount(n) / hal_wait_vcount_not(n) replace the game's three busy-wait loops on
+ *     REG_VCOUNT (patches/game.sed), running the beam to the requested line.
  */
 #include <dc/video.h>
 #include <kos.h>
@@ -40,6 +45,8 @@ extern struct IntrTable gIntrTable;
 
 volatile u32 hal_frame_count;
 u32 hal_max_frames; /* 0 = run forever; set for headless test runs */
+static int beam;        /* current scanline */
+static int in_irq;
 
 void hal_log(const char *fmt, ...) {
     char buf[256];
@@ -56,12 +63,14 @@ static int irq_enabled(u16 ie_bit, u16 dispstat_bit) {
 
 static void raise_irq(u16 ie_bit, IntrFunc fn) {
     IO16(REG_IF_OFF) |= ie_bit;
+    in_irq++;
     if (fn) fn();
+    in_irq--;
     IO16(REG_IF_OFF) &= ~ie_bit;
     INTR_CHECK |= ie_bit;
 }
 
-static void set_line(int line) {
+static void enter_line(int line) {
     u16 ds = IO16(REG_DISPSTAT_OFF);
     int lyc = ds >> 8;
     ds &= ~(DISPSTAT_VBLANK | DISPSTAT_HBLANK | DISPSTAT_VCOUNT);
@@ -69,46 +78,64 @@ static void set_line(int line) {
     if (line == lyc) ds |= DISPSTAT_VCOUNT;
     IO16(REG_DISPSTAT_OFF) = ds;
     IO16(REG_VCOUNT_OFF) = (u16)line;
-    if (line == lyc && irq_enabled(IE_VCOUNT, DISPSTAT_VCOUNT_INTR)) raise_irq(IE_VCOUNT, gIntrTable.vCount);
+    beam = line;
+    if (line == 160) {
+        hal_dma_vblank();
+        if (irq_enabled(IE_VBLANK, DISPSTAT_VBLANK_INTR)) raise_irq(IE_VBLANK, gIntrTable.vBlank);
+    }
 }
 
-static void hblank(void) {
-    IO16(REG_DISPSTAT_OFF) |= DISPSTAT_HBLANK;
-    if (IO16(REG_VCOUNT_OFF) < 160) hal_dma_hblank();
-    if (irq_enabled(IE_HBLANK, DISPSTAT_HBLANK_INTR)) raise_irq(IE_HBLANK, gIntrTable.hBlank);
-}
-
-void VBlankIntrWait(void) {
-    int line;
-
-    INTR_CHECK &= ~IE_VBLANK;
-    for (line = 0; line < 160; line++) {
-        set_line(line);
-        hal_video_render_line(line);
-        hblank();
-    }
-
-    set_line(160);
-    hal_dma_vblank();
-    if (irq_enabled(IE_VBLANK, DISPSTAT_VBLANK_INTR)) raise_irq(IE_VBLANK, gIntrTable.vBlank);
-    for (line = 160; line < 228; line++) {
-        if (line > 160) set_line(line);
-        hblank();
-    }
-    set_line(0);
-
+static void finish_frame(void) {
     hal_video_present();
     hal_input_poll();
     hal_frame_count++;
-
-    if ((hal_frame_count % 60) == 0) hal_log("frame %lu\n", (unsigned long)hal_frame_count);
+    if ((hal_frame_count % 60) == 0) {
+        extern u32 gCallbackQueue[]; /* struct CallbackQueue: current[1] is the scene handler */
+        hal_log("frame %lu DISPCNT=%04x scene=%08lx\n", (unsigned long)hal_frame_count, IO16(0),
+                (unsigned long)gCallbackQueue[1]);
+    }
     if ((hal_max_frames && hal_frame_count >= hal_max_frames) || hal_input_quit_requested()) {
         hal_log("stopping after %lu frames\n", (unsigned long)hal_frame_count);
+#ifdef HAL_FREEZE
+        for (;;) thd_sleep(1000); /* test builds: keep the last frame on screen for capture */
+#endif
         arch_exit();
     }
 }
 
+/* Finish the current line (draw it, run HBlank) and move to the next one. */
+static void beam_step(void) {
+    int line = beam;
+    if (line < 160) hal_video_render_line(line);
+    IO16(REG_DISPSTAT_OFF) |= DISPSTAT_HBLANK;
+    if (line < 160) hal_dma_hblank();
+    if ((IO16(REG_DISPSTAT_OFF) & DISPSTAT_VCOUNT) && irq_enabled(IE_VCOUNT, DISPSTAT_VCOUNT_INTR))
+        raise_irq(IE_VCOUNT, gIntrTable.vCount);
+    if (irq_enabled(IE_HBLANK, DISPSTAT_HBLANK_INTR)) raise_irq(IE_HBLANK, gIntrTable.hBlank);
+    line = (line + 1) % 228;
+    if (line == 0) finish_frame();
+    enter_line(line);
+}
+
+void VBlankIntrWait(void) {
+    INTR_CHECK &= ~IE_VBLANK;
+    /* Run to the start of the next VBlank (the VBlank handler runs on entering line 160). */
+    do {
+        beam_step();
+    } while (beam != 160);
+}
+
+void hal_wait_vcount(int line) {
+    if (in_irq) return; /* never advance the beam from inside a handler */
+    while (beam != line) beam_step();
+}
+
+void hal_wait_vcount_not(int line) {
+    if (in_irq) return;
+    while (beam == line) beam_step();
+}
+
 void hal_frame_init(void) {
     hal_frame_count = 0;
-    IO16(REG_VCOUNT_OFF) = 0;
+    enter_line(0);
 }

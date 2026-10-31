@@ -53,10 +53,12 @@ $(INC)/.stamp: $(shell find $(ROOT)/include include -type f)
 	touch $@
 
 # ---- game code: cpp -> kleod preproc (INCBIN, charmap strings) -> SH-4 gcc ------------------
-$(BUILD)/game/%.o: $(ROOT)/src/%.c $(INC)/.stamp
+$(BUILD)/game/%.o: $(ROOT)/src/%.c $(INC)/.stamp patches/game.sed
 	@mkdir -p $(dir $@)
-	$(CC) -E $(GAME_CPPFLAGS) $< -o $(BUILD)/game/$*.i
-	$(PREPROC) $(BUILD)/game/$*.i $(ROOT)/charmap.txt | sed -f patches/game.sed > $(BUILD)/game/$*.pp.c
+	sed -f patches/game.sed $< > $(BUILD)/game/$*.c
+	@cmp -s $< $(BUILD)/game/$*.c || echo "patched: $*.c ($$(diff $< $(BUILD)/game/$*.c | grep -c '^>') lines)"
+	cd $(ROOT) && $(CC) -E $(GAME_CPPFLAGS) $(BUILD)/game/$*.c -o $(BUILD)/game/$*.i
+	cd $(ROOT) && $(PREPROC) $(BUILD)/game/$*.i charmap.txt > $(BUILD)/game/$*.pp.c
 	$(CC) $(GAME_CFLAGS) -x c -c $(BUILD)/game/$*.pp.c -o $@
 
 $(BUILD)/data/%.o: $(ROOT)/src/data/%.c $(INC)/.stamp
@@ -76,7 +78,7 @@ $(BUILD)/data/%_s.o: $(ROOT)/asm/data/%.s
 # ---- hardware abstraction layer ----------------------------------------------------------
 $(BUILD)/hal/%.o: src/%.c $(INC)/.stamp $(wildcard src/*.h)
 	@mkdir -p $(dir $@)
-	$(CC) $(KOS_CFLAGS) -O2 -Wall $(if $(MAX_FRAMES),-DHAL_MAX_FRAMES=$(MAX_FRAMES)) -DPLATFORM_DREAMCAST -c $< -o $@
+	$(CC) $(KOS_CFLAGS) -O2 -Wall $(if $(MAX_FRAMES),-DHAL_MAX_FRAMES=$(MAX_FRAMES)) $(if $(AUTOPLAY),-DHAL_AUTOPLAY=$(AUTOPLAY)) $(if $(FREEZE),-DHAL_FREEZE) -DPLATFORM_DREAMCAST -c $< -o $@
 
 $(BUILD)/hal/rom_blob.o: src/rom_blob.S $(ROOT)/baserom.gba
 	@mkdir -p $(dir $@)

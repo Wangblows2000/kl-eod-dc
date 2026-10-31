@@ -67,6 +67,16 @@ void HuffUnComp(const void *src, void *dest) {
     u32 word = 0;
     int left = 0;
 
+    {
+        static int calls;
+        if (calls++ < 12)
+            hal_log("HuffUnComp #%d src=%08lx hdr=%02x%02x%02x%02x ts=%02x dst=%08lx\n", calls, (unsigned long)(uintptr_t)src, s[3],
+                    s[2], s[1], s[0], s[4], (unsigned long)(uintptr_t)dest);
+    }
+    if ((s[0] & 0xF0) != 0x20 || (bits != 4 && bits != 8)) {
+        hal_log("HuffUnComp: not a Huffman stream at %08lx, skipped\n", (unsigned long)(uintptr_t)src);
+        return;
+    }
     while (written < size) {
         u32 bit;
         u8 n;
@@ -82,7 +92,7 @@ void HuffUnComp(const void *src, void *dest) {
         left--;
         n = *node;
         is_leaf = bit ? (n & 0x40) : (n & 0x80);
-        node = (const u8 *)(((uintptr_t)node & ~1u) + ((n & 0x3F) + 1) * 2 + bit);
+        node = (const u8 *)(((uintptr_t)node & ~(uintptr_t)1) + ((n & 0x3F) + 1) * 2 + bit);
         if (is_leaf) {
             out |= (u32)(*node) << outbits;
             outbits += bits;
