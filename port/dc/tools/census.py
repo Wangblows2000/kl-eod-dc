@@ -1,0 +1,112 @@
+#!/usr/bin/env python3
+"""Portability census for the Dreamcast port. Every figure in docs/dreamcast-port-report.md comes
+from this script, run after `make compare` (GBA) and `make -C port/dc` (Dreamcast).
+
+    python3 port/dc/tools/census.py --root .
+"""
+import argparse
+import collections
+import glob
+import os
+import re
+import subprocess
+
+IO_CATS = [
+    (0x000, 0x008, "display control/status"), (0x008, 0x010, "BG control"), (0x010, 0x020, "BG scroll"),
+    (0x020, 0x040, "BG affine"), (0x040, 0x04C, "windows"), (0x04C, 0x050, "mosaic"), (0x050, 0x056, "blending"),
+    (0x060, 0x0B0, "sound"), (0x0B0, 0x0E0, "DMA"), (0x100, 0x110, "timers"), (0x120, 0x200, "keypad/serial"),
+    (0x200, 0x204, "interrupt enable/flags"), (0x204, 0x208, "waitstate"), (0x208, 0x20C, "IME"),
+]
+REGIONS = {0x02: "EWRAM", 0x03: "IWRAM", 0x05: "palette RAM", 0x06: "VRAM", 0x07: "OAM", 0x08: "ROM", 0x0D: "EEPROM"}
+BIOS = ["CpuSet", "HuffUnComp", "LZ77UnCompWram", "Sqrt", "VBlankIntrWait", "SoftResetRom"]
+
+
+def run(cmd):
+    return subprocess.run(cmd, capture_output=True, text=True).stdout
+
+
+def io_cat(off):
+    for lo, hi, name in IO_CATS:
+        if lo <= off < hi:
+            return name
+    return "other"
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--root", default=".")
+    a = ap.parse_args()
+    r = a.root
+    dcb = f"{r}/port/dc/build"
+
+    print("== kleod (GBA) ==")
+    print("ROM verification:", run(["sha1sum", "-c", f"{r}/kleod.sha1"]).strip() if os.path.exists(f"{r}/kleod.gba") else "not built")
+    cfun = cbytes = 0
+    for o in glob.glob(f"{r}/build/kleod/src/*.o"):
+        cfun += sum(1 for l in run(["arm-none-eabi-nm", "--defined-only", o]).splitlines() if l.split()[1:2] in (["T"], ["t"]))
+        for l in run(["arm-none-eabi-size", "-A", o]).splitlines():
+            if l.startswith(".text"):
+                cbytes += int(l.split()[1])
+    afun = abytes = 0
+    for s in glob.glob(f"{r}/asm/*.s"):
+        afun += len(re.findall(r"^\s*(?:thumb|arm|non_word_aligned_thumb)_func_start\s", open(s).read(), re.M))
+        o = s.replace(f"{r}/asm/", f"{r}/build/kleod/asm/").replace(".s", ".o")
+        for l in run(["arm-none-eabi-size", "-A", o]).splitlines():
+            if l.startswith(".text"):
+                abytes += int(l.split()[1])
+    src = "".join(open(f, errors="ignore").read() for f in glob.glob(f"{r}/src/*.c"))
+    inline = len(re.findall(r"\basm\s*\(", src))
+    nonmatch = len(re.findall(r"NONMATCH|INCLUDE_ASM", src))
+    print(f"C game code: {cfun} functions, {cbytes} bytes of Thumb code in {len(glob.glob(f'{r}/src/*.c'))} files")
+    print(f"assembly: {afun} routines, {abytes} bytes in {len(glob.glob(f'{r}/asm/*.s'))} files")
+    print(f"C share of code bytes: {100 * cbytes / (cbytes + abytes):.2f}%")
+    print(f"NONMATCH/INCLUDE_ASM in C: {nonmatch}; inline asm statements in C: {inline}")
+
+    print("\n== Dreamcast build ==")
+    games = sorted(glob.glob(f"{dcb}/game/*.pp.c"))
+    objs = [g.replace(".pp.c", ".o") for g in games]
+    built = [o for o in objs if os.path.exists(o)]
+    print(f"game files compiled for SH-4: {len(built)}/{len(games)} (eeprom.c replaced by hal_eeprom.c)")
+    sed_rules = [l for l in open(f"{r}/port/dc/patches/game.sed") if l.strip() and not l.startswith("#")]
+    print(f"build-time source patches: {len(sed_rules)}")
+    shfun = 0
+    for o in built:
+        shfun += sum(1 for l in run(["sh-elf-nm", "--defined-only", o]).splitlines() if l.split()[1:2] in (["T"], ["t"]))
+    print(f"functions in SH-4 game objects: {shfun}")
+    if os.path.exists(f"{dcb}/link_report.txt"):
+        print(open(f"{dcb}/link_report.txt").read().rstrip())
+    elf = f"{dcb}/klonoa-dc.elf"
+    print("executable:", f"{elf} ({os.path.getsize(elf)} bytes)" if os.path.exists(elf) else "not linked")
+
+    print("\n== GBA hardware dependencies in the game C (after preprocessing) ==")
+    io = collections.Counter()
+    io_regs = collections.defaultdict(set)
+    reg = collections.Counter()
+    reg_addrs = collections.defaultdict(set)
+    bios = collections.Counter()
+    for g in games:
+        if g.endswith("/eeprom.pp.c"):
+            continue
+        text = "\n".join(l for l in open(g, errors="ignore").read().split("\n") if not l.startswith("#"))
+        for m in re.finditer(r"0x4000000\s*\+\s*(0x[0-9a-fA-F]+|\d+)", text):
+            off = int(m.group(1), 0)
+            io[io_cat(off)] += 1
+            io_regs[io_cat(off)].add(off)
+        for m in re.finditer(r"\b0x([0-9A-Fa-f]{7,8})\b", text):
+            v = int(m.group(1), 16)
+            if v >> 24 in REGIONS and v >= 0x02000000:
+                reg[REGIONS[v >> 24]] += 1
+                reg_addrs[REGIONS[v >> 24]].add(v)
+        for b in BIOS:
+            bios[b] += len(re.findall(rf"\b{b}\s*\(", text))
+    print(f"memory-mapped I/O register accesses: {sum(io.values())} sites, {sum(len(s) for s in io_regs.values())} distinct registers")
+    for k, v in io.most_common():
+        print(f"  {k:24s} {v:5d} sites  {len(io_regs[k]):3d} registers")
+    print("fixed-address literals by region:")
+    for k, v in reg.most_common():
+        print(f"  {k:24s} {v:5d} sites  {len(reg_addrs[k]):3d} addresses")
+    print("BIOS call sites:", dict(bios), "total", sum(bios.values()))
+
+
+if __name__ == "__main__":
+    main()
