@@ -5,6 +5,7 @@
 #include <kos.h>
 
 #include "hal.h"
+#include "hal_vmu_lcd.h"
 
 KOS_INIT_FLAGS(INIT_DEFAULT);
 
@@ -67,6 +68,7 @@ int main(int argc, char **argv) {
 
     IO16(0x000) = 0x0080; /* DISPCNT: forced blank, as the BIOS leaves it */
     hal_video_init();
+    hal_vmu_lcd_init();
     hal_frame_init();
     hal_input_poll();
 
