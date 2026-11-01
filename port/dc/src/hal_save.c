@@ -106,6 +106,49 @@ static maple_device_t *vmu_dev(const struct vmu_ctx *c) {
     return d && d->valid && (d->info.functions & MAPLE_FUNC_MEMCARD) ? d : NULL;
 }
 
+/* The VMU's root block, directory and FAT, read once for a batch of file reads. vmufs_read reads
+ * all three for every file it looks up -- 15 block reads of one maple frame (16.7 ms) each, just
+ * to learn that a file is not there -- and the load at boot looks up both files on every VMU
+ * before the game's first frame: a second of black screen with two VMUs. With the snapshot it is
+ * one directory read per VMU plus the files' own blocks. A snapshot lives for one operation only
+ * (dir_drop before each load or save, and after every write), so a VMU swapped in the same slot
+ * is never read through a stale directory. */
+static struct {
+    int port, unit, valid;
+    vmu_root_t root;
+    vmu_dir_t *dir;
+    u16 *fat;
+} dsnap = {-1, 0, 0};
+
+static void dir_drop(void) {
+    free(dsnap.dir);
+    free(dsnap.fat);
+    dsnap.dir = NULL;
+    dsnap.fat = NULL;
+    dsnap.valid = 0;
+}
+
+static int dir_load(maple_device_t *d) {
+    int ok;
+    if (dsnap.valid && dsnap.port == d->port && dsnap.unit == d->unit) return 0;
+    dir_drop();
+    vmufs_mutex_lock();
+    ok = vmufs_root_read(d, &dsnap.root) >= 0;
+    if (ok) ok = (dsnap.dir = calloc(1, vmufs_dir_blocks(&dsnap.root))) != NULL;
+    if (ok) ok = vmufs_dir_read(d, &dsnap.root, dsnap.dir) >= 0;
+    if (ok) ok = (dsnap.fat = malloc(vmufs_fat_blocks(&dsnap.root))) != NULL;
+    if (ok) ok = vmufs_fat_read(d, &dsnap.root, dsnap.fat) >= 0;
+    vmufs_mutex_unlock();
+    if (!ok) {
+        dir_drop();
+        return -1;
+    }
+    dsnap.port = d->port;
+    dsnap.unit = d->unit;
+    dsnap.valid = 1;
+    return 0;
+}
+
 static u8 icon_data[512];
 static vmu_pkg_t pkg_template;
 
@@ -137,9 +180,20 @@ static int be_read(void *ctx, const char *name, u8 *buf, int cap, int *len) {
     int size = 0, r;
     vmu_pkg_t pkg;
     if (!d) return SB_NO_DEVICE;
-    r = vmufs_read(d, name, &raw, &size);
-    if (r == -2) return SB_MISSING;
-    if (r < 0) return vmu_dev(ctx) ? SB_IO : SB_NO_DEVICE;
+    if (dir_load(d) < 0) return vmu_dev(ctx) ? SB_IO : SB_NO_DEVICE;
+    r = vmufs_dir_find(&dsnap.root, dsnap.dir, name);
+    if (r < 0) return SB_MISSING;
+    size = dsnap.dir[r].filesize * 512;
+    raw = size > 0 && size <= 200 * 512 ? malloc(size) : NULL;
+    if (!raw) return SB_CORRUPT;
+    vmufs_mutex_lock();
+    r = vmufs_file_read(d, dsnap.fat, &dsnap.dir[r], raw);
+    vmufs_mutex_unlock();
+    if (r < 0) {
+        free(raw);
+        dir_drop();
+        return vmu_dev(ctx) ? SB_IO : SB_NO_DEVICE;
+    }
     r = vmu_pkg_parse(raw, (size_t)size, &pkg);
     if (r < 0 || pkg.data_len < 0 || pkg.data_len > cap) {
         free(raw);
@@ -168,6 +222,7 @@ static int be_write(void *ctx, const char *name, const u8 *buf, int len) {
     }
     memcpy(padded, out, size);
     free(out);
+    dir_drop(); /* the write changes the directory and FAT; the read-back must see the new ones */
     r = vmufs_write(d, name, padded, blocks * 512, VMUFS_OVERWRITE);
     free(padded);
     if (r == -7) return SB_FULL;
@@ -240,6 +295,7 @@ static void *writer(void *arg) {
         }
         {
             u64 t0 = hal_now_us();
+            dir_drop(); /* a fresh directory for each save: the VMU may have been swapped */
             st = pick_vmu() ? save_store_write(&store, img) : SS_NO_DEVICE;
             write_ms = (u32)((hal_now_us() - t0) / 1000);
         }
@@ -283,43 +339,65 @@ const u8 *hal_eeprom_image(void);
 u8 *hal_eeprom_image_rw(void);
 extern volatile u32 hal_eeprom_gen;
 
-void hal_save_init(void) {
-    u8 best[SAVE_DATA_BYTES], tmp[SAVE_DATA_BYTES];
-    u32 best_seq = 0;
-    int n, found = -1, bport = -1, bunit = 0;
-    enum save_status first_st = SS_NO_DEVICE;
-    maple_device_t *d;
-    kthread_t *t;
+/* The load at boot: every VMU's two files, the best valid record kept. About 0.25 s per VMU (the
+ * directory snapshot's 15 block reads; a save adds 3 per file), all before the game's first frame:
+ * the game reads its EEPROM in its first frame. */
+#define LOAD_MAX 8
+static struct {
+    u8 best[SAVE_DATA_BYTES];
+    u32 best_seq;
+    int n, found, bport, bunit;
+    enum save_status st[LOAD_MAX];
+    int port[LOAD_MAX], unit[LOAD_MAX];
+} ld;
 
-    build_icon();
-    memset(hal_eeprom_image_rw(), 0xFF, SAVE_DATA_BYTES); /* a new cartridge's EEPROM */
-    for (n = 0; (d = maple_enum_type(n, MAPLE_FUNC_MEMCARD)) != NULL; n++) {
+static void load_all(void) {
+    u8 tmp[SAVE_DATA_BYTES];
+    maple_device_t *d;
+    ld.found = -1;
+    for (ld.n = 0; ld.n < LOAD_MAX && (d = maple_enum_type(ld.n, MAPLE_FUNC_MEMCARD)) != NULL; ld.n++) {
         struct save_store s;
         enum save_status st;
         vctx.port = d->port;
         vctx.unit = d->unit;
         save_store_init(&s, &backend);
         st = save_store_load(&s, tmp);
-        hal_log("save: VMU %s: %s\n", vmu_name(d->port, d->unit), save_status_name(st));
-        if (n == 0) first_st = st;
-        if (st == SS_LOADED && (found < 0 || (int32_t)(s.seq - best_seq) > 0)) {
-            found = n;
-            best_seq = s.seq;
-            bport = d->port;
-            bunit = d->unit;
-            memcpy(best, tmp, sizeof best);
+        dir_drop();
+        ld.st[ld.n] = st;
+        ld.port[ld.n] = d->port;
+        ld.unit[ld.n] = d->unit;
+        if (st == SS_LOADED && (ld.found < 0 || (int32_t)(s.seq - ld.best_seq) > 0)) {
+            ld.found = ld.n;
+            ld.best_seq = s.seq;
+            ld.bport = d->port;
+            ld.bunit = d->unit;
+            memcpy(ld.best, tmp, sizeof ld.best);
             store = s;
         }
     }
-    if (found >= 0) {
-        vctx.port = bport;
-        vctx.unit = bunit;
-        store_port = bport;
-        store_unit = bunit;
-        memcpy(hal_eeprom_image_rw(), best, SAVE_DATA_BYTES);
-        hal_log("save: loaded seq %lu from VMU %s (EEPROM crc %08lx)\n", (unsigned long)best_seq,
-                vmu_name(bport, bunit), (unsigned long)save_crc32(best, SAVE_DATA_BYTES));
-        set_msg(0, MSG_LONG_US, "VMU %s: SAVE LOADED", vmu_name(bport, bunit));
+}
+
+void hal_save_init(void) {
+    enum save_status first_st;
+    maple_device_t *d;
+    kthread_t *t;
+    int n;
+
+    build_icon();
+    load_all();
+    first_st = ld.n ? ld.st[0] : SS_NO_DEVICE;
+    for (n = 0; n < ld.n; n++)
+        hal_log("save: VMU %s: %s\n", vmu_name(ld.port[n], ld.unit[n]), save_status_name(ld.st[n]));
+    memset(hal_eeprom_image_rw(), 0xFF, SAVE_DATA_BYTES); /* a new cartridge's EEPROM */
+    if (ld.found >= 0) {
+        vctx.port = ld.bport;
+        vctx.unit = ld.bunit;
+        store_port = ld.bport;
+        store_unit = ld.bunit;
+        memcpy(hal_eeprom_image_rw(), ld.best, SAVE_DATA_BYTES);
+        hal_log("save: loaded seq %lu from VMU %s (EEPROM crc %08lx)\n", (unsigned long)ld.best_seq,
+                vmu_name(ld.bport, ld.bunit), (unsigned long)save_crc32(ld.best, SAVE_DATA_BYTES));
+        set_msg(0, MSG_LONG_US, "VMU %s: SAVE LOADED", vmu_name(ld.bport, ld.bunit));
     } else {
         d = maple_enum_type(0, MAPLE_FUNC_MEMCARD);
         vctx.port = d ? d->port : -1;
