@@ -1,0 +1,42 @@
+# VMU LCD route (tools/vmulcd.py): the regression route (tests/route.txt) through the title, file
+# select, world map, story cutscene and vision select into Vision 1-1, its gameplay (run, jump,
+# wind bullet, grab, flutter), then a pause and resume, running left (Klonoa turns round), a
+# jump and standing idle. Build with VMULCD_LOG=1 so every LCD image is logged; run with flycast's
+# FC_VMULCD hook to capture what the VMUs received.
+press 300 4 START
+press 450 4 START
+press 600 4 START
+press 750 4 A
+press 900 4 START
+press 1050 4 A
+press 1200 4 START
+press 1350 4 A
+press 1500 4 A
+press 1650 4 A
+press 1800 4 START
+press 1950 4 A
+press 2100 4 A
+press 2250 4 A
+press 2400 4 A
+press 2550 4 A
+press 2700 4 A
+press 2850 150 RIGHT
+press 2900 4 A
+press 3000 150 RIGHT
+press 3060 4 B
+press 3150 20 A
+# pause menu (menu -> Moo) and back to the level
+press 3300 4 START
+press 3420 4 START
+# run left to the Moo behind Klonoa, wind bullet (grab), run right carrying it, jump, throw it
+# down in mid-air (double jump), jump and flutter (hold A), land, stand idle
+press 3480 60 LEFT
+press 3542 4 B
+press 3580 60 RIGHT
+press 3610 4 A
+press 3628 4 B
+press 3690 45 A
+dump 3100  # gameplay: running right after the jump
+dump 3360  # pause menu
+dump 3600  # carrying
+end 3800

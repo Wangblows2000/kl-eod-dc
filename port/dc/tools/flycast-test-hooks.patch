@@ -1,10 +1,12 @@
-Test hooks for flycast used by tools/audio_regress.sh and tools/audiocheck.py (not part of the port).
+Test hooks for flycast used by tools/audio_regress.sh, tools/audiocheck.py and tools/vmulcd.py (not part of the port).
 Applies to flycast 7adbf3caef251b153e348df3f469a0f35878339d (github.com/flyinghead/flycast) with
-`git apply`; both hooks do nothing unless their environment variable is set.
+`git apply`; each hook does nothing unless its environment variable is set.
 
   FC_AUDIO_DUMP=<file>  write the AICA's 44.1 kHz output as raw s16 stereo (L, R)
   FC_RAMDUMP=<file>     when the guest prints a serial line "FCDUMP <addr> <len>" (hex), write that
                         range of main RAM to <file> (AUDIODUMP builds hand over their records so)
+  FC_VMULCD=<file>      one line per VMU LCD write: sequence number, VMU port (A1...), the 192 raw
+                        bytes in hex (tools/vmulcd.py reads it)
 
 diff --git a/core/audio/audiostream.cpp b/core/audio/audiostream.cpp
 index 3799393..4caaef3 100644
@@ -90,3 +92,35 @@ index a36d95b..4571a85 100644
  	SCIF_LOG("serial out %02x %c fifo_sz %d", data, data == '\0' ? ' ' : data, (int)txFifo.size());
  	if (SCIF_SCFCR2.TFRST == 1)
  		return;
+diff --git a/core/hw/maple/maple_devs.cpp b/core/hw/maple/maple_devs.cpp
+--- a/core/hw/maple/maple_devs.cpp
++++ b/core/hw/maple/maple_devs.cpp
+@@ -718,6 +718,28 @@
+ 						DEBUG_LOG(MAPLE, "VMU %s LCD write", logical_port);
+ 						r32();	// PT, phase, block#
+ 						rptr(lcd_data,192);
++						{
++							// Test hook (local patch): $FC_VMULCD names a file that gets one line per
++							// LCD write: sequence number, VMU port ("A1"), the 192 raw bytes in hex.
++							static FILE *lcdLog;
++							static bool lcdChecked;
++							static u32 lcdSeq;
++							if (!lcdChecked)
++							{
++								lcdChecked = true;
++								const char *path = getenv("FC_VMULCD");
++								if (path != nullptr)
++									lcdLog = fopen(path, "w");
++							}
++							if (lcdLog != nullptr)
++							{
++								fprintf(lcdLog, "%u %s ", lcdSeq++, logical_port);
++								for (u8 b : lcd_data)
++									fprintf(lcdLog, "%02x", b);
++								fprintf(lcdLog, "\n");
++								fflush(lcdLog);
++							}
++						}
+ 
+ 						u8 white=0xff,black=0x00;
+ 

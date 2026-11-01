@@ -20,6 +20,7 @@
 #include <stdio.h>
 
 #include "hal.h"
+#include "hal_vmu_lcd.h"
 
 typedef void (*IntrFunc)(void);
 struct IntrTable {
@@ -115,6 +116,7 @@ static void finish_frame(void) {
             hal_log("SCENE frame=%lu handler=%08lx\n", (unsigned long)hal_frame_count, (unsigned long)last_scene);
         }
     }
+    hal_vmu_lcd_frame();
     if ((hal_max_frames && hal_frame_count >= hal_max_frames) || hal_input_quit_requested()) {
         hal_log("stopping after %lu frames\n", (unsigned long)hal_frame_count);
         hal_report_memory();

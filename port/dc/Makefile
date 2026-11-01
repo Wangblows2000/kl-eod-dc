@@ -170,3 +170,24 @@ test-audio:
 	@mkdir -p $(BUILD)
 	cc -O2 -Wall -I src -DGBASND_TEST src/hal_gbasnd.c tools/gbasnd_test.c -lm -o $(BUILD)/gbasnd_test
 	$(BUILD)/gbasnd_test
+
+# ---- VMU LCD character (src/hal_vmu_lcd*.c, docs/vmu-lcd.md) --------------------------------
+#   VMULCD=0      leave the VMU screens alone
+#   VMULCD_LOG=1  log every LCD image and every send over serial, for tools/vmulcd.py (scripted
+#                 runs only: each image is a ~530-byte line, which costs frame time)
+#   make test-vmu-lcd   host test: conversion, frame sequencing, the Moo, mode choice, send schedule
+VMULCD ?= 1
+$(BUILD)/vmulcd_options.h: FORCE
+	@mkdir -p $(dir $@)
+	@{ echo '#define HAL_VMULCD $(if $(filter 0,$(VMULCD)),0,1)'; \
+	   $(if $(VMULCD_LOG),echo '#define HAL_VMULCD_LOG 1';) true; } > $@.tmp
+	@cmp -s $@.tmp $@ || mv $@.tmp $@; rm -f $@.tmp
+$(BUILD)/hal/hal_vmu_lcd.o: src/hal_vmu_lcd.c $(INC)/.stamp $(wildcard src/*.h) $(BUILD)/options.h $(BUILD)/vmulcd_options.h
+	@mkdir -p $(dir $@)
+	$(CC) $(KOS_CFLAGS) -O2 -Wall -include $(BUILD)/options.h -include $(BUILD)/vmulcd_options.h -DPLATFORM_DREAMCAST -c $< -o $@
+
+.PHONY: test-vmu-lcd
+test-vmu-lcd:
+	@mkdir -p $(BUILD)
+	cc -O2 -Wall -I src src/hal_vmu_lcd_core.c tools/vmu_lcd_test.c -o $(BUILD)/vmu_lcd_test
+	$(BUILD)/vmu_lcd_test $(ROOT)/baserom.gba

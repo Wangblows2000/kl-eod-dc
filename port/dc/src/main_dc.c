@@ -5,6 +5,7 @@
 #include <kos.h>
 
 #include "hal.h"
+#include "hal_vmu_lcd.h"
 
 KOS_INIT_FLAGS(INIT_DEFAULT);
 
@@ -69,6 +70,7 @@ int main(int argc, char **argv) {
     hal_video_init();
     maple_wait_scan(); /* every VMU enumerated before the save is looked for */
     hal_save_init();
+    hal_vmu_lcd_init();
     hal_frame_init();
     hal_input_poll();
 
