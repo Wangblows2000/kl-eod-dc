@@ -28,6 +28,21 @@ static void *watchdog(void *p) {
     return NULL;
 }
 
+/* Microbenchmark: memory-bound loop over a 64 KiB P1 buffer. Run before and after the MMU is
+ * enabled to see how much the emulator's MMU mode costs (real hardware: no difference). */
+static u8 bench_buf[65536] __attribute__((aligned(32)));
+static void bench(const char *when) {
+    u64 t0 = timer_us_gettime64();
+    u32 i, k, sum = 0;
+    for (k = 0; k < 16; k++)
+        for (i = 0; i < sizeof bench_buf; i++) {
+            bench_buf[(i * 37) & 0xFFFF] = (u8)(bench_buf[i] + k);
+            sum += bench_buf[i];
+        }
+    hal_log("BENCH %s: 1M byte read-modify-writes in %lu us (checksum %lu)\n", when,
+            (unsigned long)(timer_us_gettime64() - t0), (unsigned long)sum);
+}
+
 int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
@@ -37,11 +52,17 @@ int main(int argc, char **argv) {
     scif_init();
 #endif
     hal_log("klonoa-dc: boot\n");
+#ifdef HAL_FAST_SERIAL
+    bench("MMU off");
+#endif
     if (hal_mem_init() < 0) {
         hal_log("klonoa-dc: fatal: memory mapping failed\n");
         return 1;
     }
     hal_apply_code_ptr_fixups();
+#ifdef HAL_FAST_SERIAL
+    bench("MMU on");
+#endif
 
     IO16(0x000) = 0x0080; /* DISPCNT: forced blank, as the BIOS leaves it */
     hal_video_init();

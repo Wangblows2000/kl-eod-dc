@@ -141,17 +141,26 @@ static int bg_is_affine(int mode, int n);
 
 static u8 morton8[64]; /* texel (x + 8y) of an 8x8 block -> twiddled index */
 
-static u32 spread(u32 v) {
-    u32 r = 0, b;
-    for (b = 0; b < 16; b++) r |= ((v >> b) & 1) << (2 * b);
-    return r;
+/* Bit interleave (Morton) for twiddled addressing; arguments are always < 256 here. */
+static u16 spread_tab[256];
+
+static void init_spread(void) {
+    u32 v, b;
+    for (v = 0; v < 256; v++) {
+        u32 r = 0;
+        for (b = 0; b < 8; b++) r |= ((v >> b) & 1) << (2 * b);
+        spread_tab[v] = (u16)r;
+    }
 }
+
+static inline u32 spread(u32 v) { return spread_tab[v & 255]; }
 
 /* Byte offset of the 8x8 block at tile (tx, ty) in a twiddled 8bpp texture of w x h pixels
  * (rectangular textures are a row/column of min(w,h) squares, as in pvr_txr_load_ex). */
 static u32 block8_offset(u32 tx, u32 ty, u32 w, u32 h) {
-    u32 m = (w < h ? w : h) >> 3;
-    return ((spread(ty % m) | spread(tx % m) << 1) + (tx / m + ty / m) * m * m) * 64;
+    u32 m = (w < h ? w : h) >> 3; /* power of two: 16, 32, 64 or 128 tiles */
+    u32 sh = m == 128 ? 7 : m == 64 ? 6 : m == 32 ? 5 : 4, mask = m - 1;
+    return ((spread(ty & mask) | spread(tx & mask) << 1) + ((tx >> sh) + (ty >> sh)) * m * m) * 64;
 }
 
 /* Texture uploads use plain 32-bit stores to (uncached) texture memory, not the store queues:
@@ -171,7 +180,8 @@ static u8 vram_shadow[0x18000];
 /* Frame in which each 32-byte VRAM chunk last changed. A BG map texture compares this with the
  * frame it was last synced, so changes made while the layer was hidden are not lost. */
 static u32 chunk_gen[3072];
-static u32 sync_gen; /* incremented once per presented frame */
+static u32 sync_gen;    /* incremented once per presented frame */
+static u32 bg_vram_gen; /* sync_gen of the last change anywhere in BG VRAM (0x0000-0xFFFF) */
 
 /* OBJ atlases: 4bpp 1024 tiles (256x256), 8bpp 512 tiles (256x256, half used). */
 static pvr_ptr_t obj4, obj8;
@@ -206,6 +216,7 @@ static u32 sync_vram(void) {
             continue;
         memcpy(s, (const void *)v, 32);
         chunk_gen[t] = sync_gen;
+        if (t < 2048) bg_vram_gen = sync_gen;
         changed++;
         if (t >= 2048) {
             convert_obj4(t - 2048);
@@ -236,25 +247,31 @@ static int ensure_alloc(struct bgtex *b, u32 bytes) {
     return b->tex != NULL;
 }
 
+/* mflip[f][i]: twiddled position of linear texel i (x + 8y) of a tile drawn with flips f (bit 0
+ * horizontal, bit 1 vertical). */
+static u8 mflip[4][64];
+
 static void build_text_tile(struct bgtex *b, u16 e, u32 charbase, int bpp8, u32 tx, u32 ty) {
     u8 out[64] __attribute__((aligned(32)));
+    const u8 *m = mflip[(e >> 10) & 3];
     int i;
-    for (i = 0; i < 64; i++) {
-        int x = i & 7, y = i >> 3, sx = (e & 0x400) ? 7 - x : x, sy = (e & 0x800) ? 7 - y : y;
-        u8 c;
-        if (bpp8) {
-            c = vram_shadow[(charbase + (e & 0x3FF) * 64 + sy * 8 + sx) % 0x10000];
-        } else {
-            u8 byte = vram_shadow[(charbase + (e & 0x3FF) * 32 + sy * 4 + (sx >> 1)) % 0x10000];
-            c = (sx & 1) ? byte >> 4 : byte & 15;
-            if (c) c |= (e >> 12) << 4; /* bank in the high nibble; index 0 stays transparent */
+    if (bpp8) {
+        const u8 *src = vram_shadow + ((charbase + (e & 0x3FF) * 64) & 0xFFFF); /* 64-aligned: never wraps */
+        for (i = 0; i < 64; i++) out[m[i]] = src[i];
+    } else {
+        const u8 *src = vram_shadow + ((charbase + (e & 0x3FF) * 32) & 0xFFFF);
+        u8 bank = (u8)((e >> 12) << 4);
+        for (i = 0; i < 32; i++) {
+            u8 v = src[i], lo = v & 15, hi = v >> 4;
+            out[m[2 * i]] = lo ? lo | bank : 0; /* index 0 stays transparent */
+            out[m[2 * i + 1]] = hi ? hi | bank : 0;
         }
-        out[morton8[i]] = c;
     }
     upload64((u8 *)b->tex + block8_offset(tx, ty, b->w, b->h), out);
 }
 
 static u32 rebuilt;
+static u32 ph_vram, ph_maps, ph_mos; /* texture-sync phase times of the current frame (us) */
 
 static int tile_dirty(const struct bgtex *b, u32 charbase, u16 tileno, int bpp8) {
     u32 c = (charbase + tileno * (bpp8 ? 64 : 32)) % 0x10000 / 32;
@@ -278,7 +295,7 @@ static void sync_text_bg(int n, u16 cnt) {
     for (ty = 0; ty < ht; ty++)
         for (tx = 0; tx < wt; tx++) {
             u32 block = (u32)((tx >> 5) + (ty >> 5) * (wt >> 5));
-            u16 e = *(volatile u16 *)(GBA_VRAM + screenbase + block * 0x800 + ((ty & 31) * 32 + (tx & 31)) * 2);
+            u16 e = *(const u16 *)(vram_shadow + screenbase + block * 0x800 + ((ty & 31) * 32 + (tx & 31)) * 2);
             u16 *sh = &b->shadow[ty * 64 + tx];
             if (!full && e == *sh && !tile_dirty(b, charbase, e & 0x3FF, bpp8)) continue;
             *sh = e;
@@ -302,7 +319,7 @@ static void sync_affine_bg(int n, u16 cnt) {
     }
     for (ty = 0; ty < tiles; ty++)
         for (tx = 0; tx < tiles; tx++) {
-            u8 tile = VRAM8[screenbase + ty * tiles + tx];
+            u8 tile = vram_shadow[screenbase + ty * tiles + tx];
             u8 *sh = &b->ashadow[ty * 128 + tx];
             if (!full && tile == *sh && !tile_dirty(b, charbase, tile, 1)) continue;
             *sh = tile;
@@ -356,17 +373,66 @@ static u8 bg_pixel(const struct lstate *s, int n, int x, int y, int line_in_run)
     }
 }
 
+/* Inputs a mosaic texture depends on: mosaic size, the layer's registers on block-start lines,
+ * and BG VRAM. Rebuild only when they change (transitions hold a size for several frames). */
+static u32 mosaic_key(int n) {
+    u32 h = 2166136261u, by;
+    const u32 *p;
+    unsigned k;
+    h = (h ^ lines[0].mosaic) * 16777619u;
+    h = (h ^ bg_vram_gen) * 16777619u;
+    for (by = 0; by * mos_bh < H; by++) {
+        const struct lstate *s = &lines[by * mos_bh];
+        u32 v[6] = {s->dispcnt, s->bgcnt[n], (u32)s->hofs[n] << 16 | s->vofs[n], 0, 0, 0};
+        if (n >= 2) {
+            v[3] = (u32)(u16)s->pa[n - 2] << 16 | (u16)s->pc[n - 2];
+            v[4] = (u32)s->refx[n - 2];
+            v[5] = (u32)s->refy[n - 2];
+        }
+        for (p = v, k = 0; k < 6; k++) h = (h ^ p[k]) * 16777619u;
+    }
+    return h;
+}
+
 static void build_mosaic(int n) {
+    static u32 built_key[4];
     int bx, by, i;
+    u32 key;
     if (!mostex[n]) mostex[n] = pvr_mem_malloc(MOS * MOS);
     if (!mostex[n]) return;
+    key = mosaic_key(n);
+    if (key == built_key[n]) return;
+    built_key[n] = key;
+
     memset(mosbuf, 0, sizeof mosbuf);
     for (by = 0; by * mos_bh < H; by++) {
         const struct lstate *s = &lines[by * mos_bh];
-        for (bx = 0; bx * mos_bw < W; bx++) {
-            u8 c = 0;
-            if ((s->dispcnt & (0x100 << n)) && bg_exists(s->dispcnt & 7, n)) c = bg_pixel(s, n, bx * mos_bw, by * mos_bh, 0);
-            mosbuf[spread(by) | spread(bx) << 1] = c;
+        u32 row = spread(by);
+        if (!(s->dispcnt & (0x100 << n)) || !bg_exists(s->dispcnt & 7, n)) continue; /* row stays transparent */
+        if (!bg_is_affine(s->dispcnt & 7, n)) {
+            /* text BG: one map row and one tile row per block row */
+            u16 cnt = s->bgcnt[n];
+            u32 charbase = ((cnt >> 2) & 3) * 0x4000, screenbase = ((cnt >> 8) & 0x1F) * 0x800;
+            int size = cnt >> 14, wt = (size & 1) ? 64 : 32, ht = (size & 2) ? 64 : 32, bpp8 = cnt & 0x80;
+            int py = (by * mos_bh + s->vofs[n]) & (ht * 8 - 1), ty = py >> 3, fy = py & 7;
+            u32 wmask = wt * 8 - 1, x = s->hofs[n];
+            const u8 *maprow = vram_shadow + screenbase + (ty >> 5) * (wt >> 5) * 0x800 + (ty & 31) * 64;
+            for (bx = 0; bx * mos_bw < W; bx++, x += mos_bw) {
+                u32 px = x & wmask, tx = px >> 3;
+                u16 e = *(const u16 *)(maprow + (tx >> 5) * 0x800 + (tx & 31) * 2);
+                int fx = (e & 0x400) ? 7 - (px & 7) : (px & 7), ry = (e & 0x800) ? 7 - fy : fy;
+                u8 c;
+                if (bpp8) {
+                    c = vram_shadow[(charbase + (e & 0x3FF) * 64 + ry * 8 + fx) & 0xFFFF];
+                } else {
+                    u8 b = vram_shadow[(charbase + (e & 0x3FF) * 32 + ry * 4 + (fx >> 1)) & 0xFFFF];
+                    c = (fx & 1) ? b >> 4 : b & 15;
+                    if (c) c |= (e >> 12) << 4;
+                }
+                mosbuf[row | spread(bx) << 1] = c;
+            }
+        } else {
+            for (bx = 0; bx * mos_bw < W; bx++) mosbuf[row | spread(bx) << 1] = bg_pixel(s, n, bx * mos_bw, by * mos_bh, 0);
         }
     }
     for (i = 0; i < MOS * MOS; i += 64) upload64((u8 *)mostex[n] + i, mosbuf + i);
@@ -946,7 +1012,14 @@ void hal_pvr_init(void) {
     pvr_set_pal_format(PVR_PAL_ARGB1555);
     obj4 = pvr_mem_malloc(256 * 256 / 2);
     obj8 = pvr_mem_malloc(256 * 256);
+    init_spread();
     for (i = 0; i < 64; i++) morton8[i] = (u8)(spread(i >> 3) | spread(i & 7) << 1);
+    for (i = 0; i < 256; i++) {
+        int f = i >> 6, t = i & 63, x = t & 7, y = t >> 3;
+        if (f & 1) x = 7 - x;
+        if (f & 2) y = 7 - y;
+        mflip[f][t] = (u8)(spread(y) | spread(x) << 1);
+    }
     memset(vram_shadow, 0, sizeof vram_shadow);
     for (i = 0; i < 1024; i++) convert_obj4(i);
     for (i = 0; i < 512; i++) convert_obj8(i);
@@ -969,7 +1042,11 @@ void hal_pvr_present(void) {
     /* texture and palette sync (store queues are free until the scene begins) */
     rebuilt = 0;
     sync_gen++;
-    changed = (HAL_PVR_DEBUG & 16) && hal_frame_count > 1300 ? 0 : sync_vram();
+    {
+        u64 a = hal_now_us();
+        changed = (HAL_PVR_DEBUG & 16) && hal_frame_count > 1300 ? 0 : sync_vram();
+        ph_vram = (u32)(hal_now_us() - a);
+    }
     for (n = 0; n < H; n++) {
         int l;
         mode = lines[n].dispcnt & 7;
@@ -978,17 +1055,25 @@ void hal_pvr_present(void) {
                 used[l] |= bg_is_affine(mode, l) ? 2 : 1;
     }
     if ((HAL_PVR_DEBUG & 16) && hal_frame_count > 1300) memset(used, 0, sizeof used);
+    ph_maps = (u32)hal_now_us();
     for (n = 0; n < 4; n++) {
         if (used[n] == 3) unsupported_seen |= 8; /* same BG text and affine in one frame */
         if (used[n] & 2) sync_affine_bg(n, lines[H - 1].bgcnt[n]);
         else if (used[n]) sync_text_bg(n, lines[H - 1].bgcnt[n]);
     }
+    ph_maps = (u32)hal_now_us() - ph_maps;
+    ph_mos = (u32)hal_now_us();
     plan_mosaic();
+    ph_mos = (u32)hal_now_us() - ph_mos;
     plan_fade();
     if (fade_mode) USE(F_FADE_PAL);
     if (!((HAL_PVR_DEBUG & 16) && hal_frame_count > 1300)) sync_palette();
     t2 = hal_now_us();
     hal_prof.tex_us += (u32)(t2 - t1);
+    if (t2 - t1 > 15000)
+        hal_log("TEXSYNC frame=%lu %luus: vram=%lu (%lu chunks) maps=%lu (%lu tiles) mosaic=%lu\n",
+                (unsigned long)hal_frame_count, (unsigned long)(t2 - t1), (unsigned long)ph_vram, (unsigned long)changed,
+                (unsigned long)ph_maps, (unsigned long)rebuilt, (unsigned long)ph_mos);
 
     prims = 0;
     {

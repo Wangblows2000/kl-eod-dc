@@ -86,6 +86,14 @@ void hal_prof_frame_end(void) {
     u64 now = hal_now_us();
     if (last) {
         u32 ft = (u32)(now - last);
+        static struct hal_prof prev;
+        if (hal_prof.frames == 0) memset(&prev, 0, sizeof prev); /* accumulators were just reset */
+        if (ft > 33000)
+            hal_log("SPIKE frame=%lu %luus: game=%lu snapshots=%lu tex=%lu submit=%lu wait=%lu\n",
+                    (unsigned long)hal_frame_count, (unsigned long)ft, (unsigned long)(hal_prof.game_us - prev.game_us),
+                    (unsigned long)(hal_prof.render_us - prev.render_us), (unsigned long)(hal_prof.tex_us - prev.tex_us),
+                    (unsigned long)(hal_prof.submit_us - prev.submit_us), (unsigned long)(hal_prof.wait_us - prev.wait_us));
+        prev = hal_prof;
         hal_prof.frames++;
         hal_prof.frame_us += ft;
         if (ft > hal_prof.worst_us) hal_prof.worst_us = ft;
