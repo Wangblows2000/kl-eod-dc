@@ -12,7 +12,9 @@ in the copy assembled into the executable.
 """
 import argparse
 import bisect
+import os
 import re
+import sys
 import struct
 import subprocess
 
@@ -38,7 +40,10 @@ def symbolic_relocs(root):
     sites = set()
     for m in re.finditer(r"^ (\.(?:rodata|data))\s+0x(0*8[0-9a-f]{6})\s+0x[0-9a-f]+\s+(\S+\.o)$", mp, re.M):
         sec, base, obj = m.group(1), int(m.group(2), 16), m.group(3)
-        r = subprocess.run(["arm-none-eabi-objdump", "-r", "-j", sec, f"{root}/build/kleod/{obj}"],
+        path = f"{root}/build/kleod/{obj}"
+        if not os.path.exists(path):  # without it the relocation sites would silently be missed
+            sys.exit(f"scan_code_pointers: {path} is missing: build kleod first (make compare)")
+        r = subprocess.run(["arm-none-eabi-objdump", "-r", "-j", sec, path],
                            capture_output=True, text=True).stdout
         for mm in re.finditer(r"^([0-9a-f]{8}) R_ARM_ABS32", r, re.M):
             sites.add(base + int(mm.group(1), 16))
