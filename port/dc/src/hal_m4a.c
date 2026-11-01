@@ -142,6 +142,28 @@ void ClearChain(struct MixerSource *);
 void Clear64byte(void *);
 void MP2K_event_fine(struct MP2KPlayerState *, struct MP2KTrack *);
 
+/* AUDIOCHECK=1 test builds count which engine behaviours the game actually exercises. */
+#ifdef HAL_AUDIO_CHECK
+enum { E_NOTE_DS, E_NOTE_CGB, E_STEAL, E_NO_CHANNEL, E_TRACKSTOP, E_ENDTIE, E_TEMPO, E_VOICE, E_VOL, E_PAN, E_BEND,
+       E_BENDR, E_KEYSH, E_TUNE, E_MOD, E_LFOS, E_LFODL, E_MODT, E_PORT, E_GOTO, E_PATT, E_PEND, E_REPT, E_PRIO,
+       E_LOOP, E_SAMPLE_END, E_RELEASE, E_ECHO, E_REVERB_FRAME, E_COUNT };
+static const char *const e_name[E_COUNT] = {"DirectSound notes", "PSG notes", "notes that took a playing channel",
+    "notes with no channel free", "TrackStop", "EOT (end tie)", "tempo", "voice", "volume", "pan", "bend",
+    "bend range", "key shift", "tune", "modulation depth", "LFO speed", "LFO delay", "modulation type",
+    "PSG register writes", "goto", "pattern call", "pattern end", "repeat", "priority", "sample loops",
+    "samples played to the end", "notes released at gate time", "pseudo-echo started", "frames mixed with reverb"};
+static u32 e_count[E_COUNT];
+#define COUNT(e) (e_count[e]++)
+void hal_m4a_report(void) {
+    int i;
+    hal_log("ENGINE behaviours exercised:\n");
+    for (i = 0; i < E_COUNT; i++) hal_log("ENGINE %s: %lu\n", e_name[i], (unsigned long)e_count[i]);
+}
+#else
+#define COUNT(e)
+void hal_m4a_report(void) {}
+#endif
+
 /* ---- sequencer --------------------------------------------------------------------------- */
 
 static inline u8 read_byte(struct MP2KTrack *t) { return *t->cmdPtr++; } /* sub_0804F758 */
@@ -164,10 +186,12 @@ static void chn_vol_set(struct MixerSource *c, struct MP2KTrack *t) {
 void MP2K_event_goto(struct MP2KPlayerState *p, struct MP2KTrack *t) {
     const u8 *q = t->cmdPtr;
     (void)p;
+    COUNT(E_GOTO);
     t->cmdPtr = (const u8 *)(uintptr_t)(q[0] | q[1] << 8 | q[2] << 16 | (u32)q[3] << 24);
 }
 
 void MP2K_event_patt(struct MP2KPlayerState *p, struct MP2KTrack *t) {
+    COUNT(E_PATT);
     if (t->patternLevel < 3) {
         t->patternStack[t->patternLevel] = t->cmdPtr + 4;
         t->patternLevel++;
@@ -179,6 +203,7 @@ void MP2K_event_patt(struct MP2KPlayerState *p, struct MP2KTrack *t) {
 
 void MP2K_event_pend(struct MP2KPlayerState *p, struct MP2KTrack *t) {
     (void)p;
+    COUNT(E_PEND);
     if (t->patternLevel) {
         t->patternLevel--;
         t->cmdPtr = t->patternStack[t->patternLevel];
@@ -187,6 +212,7 @@ void MP2K_event_pend(struct MP2KPlayerState *p, struct MP2KTrack *t) {
 
 void MP2K_event_rept(struct MP2KPlayerState *p, struct MP2KTrack *t) {
     const u8 *q = t->cmdPtr;
+    COUNT(E_REPT);
     if (*q == 0) { /* repeat forever */
         t->cmdPtr = q + 1;
         MP2K_event_goto(p, t);
@@ -203,57 +229,67 @@ void MP2K_event_rept(struct MP2KPlayerState *p, struct MP2KTrack *t) {
 
 void MP2K_event_prio(struct MP2KPlayerState *p, struct MP2KTrack *t) {
     (void)p;
+    COUNT(E_PRIO);
     t->priority = read_byte(t);
 }
 
 void MP2K_event_tempo(struct MP2KPlayerState *p, struct MP2KTrack *t) {
     u32 bpm = (u32)read_byte(t) << 1;
+    COUNT(E_TEMPO);
     p->tempoRawBPM = (u16)bpm;
     p->tempoInterval = (u16)((bpm * p->tempoScale) >> 8);
 }
 
 void MP2K_event_keysh(struct MP2KPlayerState *p, struct MP2KTrack *t) {
     (void)p;
+    COUNT(E_KEYSH);
     t->keyShift = (s8)read_byte(t);
     t->status |= 0x0C;
 }
 
 void MP2K_event_voice(struct MP2KPlayerState *p, struct MP2KTrack *t) {
+    COUNT(E_VOICE);
     t->tone = p->voicegroup[read_byte(t)];
 }
 
 void MP2K_event_vol(struct MP2KPlayerState *p, struct MP2KTrack *t) {
     (void)p;
+    COUNT(E_VOL);
     t->vol = read_byte(t);
     t->status |= 0x03;
 }
 
 void MP2K_event_pan(struct MP2KPlayerState *p, struct MP2KTrack *t) {
     (void)p;
+    COUNT(E_PAN);
     t->pan = (s8)(read_byte(t) - 0x40);
     t->status |= 0x03;
 }
 
 void MP2K_event_bend(struct MP2KPlayerState *p, struct MP2KTrack *t) {
     (void)p;
+    COUNT(E_BEND);
     t->bend = (s8)(read_byte(t) - 0x40);
     t->status |= 0x0C;
 }
 
 void MP2K_event_bendr(struct MP2KPlayerState *p, struct MP2KTrack *t) {
     (void)p;
+    COUNT(E_BENDR);
     t->bendRange = read_byte(t);
     t->status |= 0x0C;
 }
 
 void MP2K_event_lfodl(struct MP2KPlayerState *p, struct MP2KTrack *t) {
     (void)p;
+    COUNT(E_LFODL);
     t->lfoDelay = read_byte(t);
 }
 
 void MP2K_event_modt(struct MP2KPlayerState *p, struct MP2KTrack *t) {
     u8 v = read_byte(t);
     (void)p;
+    COUNT(E_MODT);
     if (t->modType != v) {
         t->modType = v;
         t->status |= 0x0F;
@@ -262,6 +298,7 @@ void MP2K_event_modt(struct MP2KPlayerState *p, struct MP2KTrack *t) {
 
 void MP2K_event_tune(struct MP2KPlayerState *p, struct MP2KTrack *t) {
     (void)p;
+    COUNT(E_TUNE);
     t->tune = (s8)(read_byte(t) - 0x40);
     t->status |= 0x0C;
 }
@@ -270,17 +307,20 @@ void MP2K_event_tune(struct MP2KPlayerState *p, struct MP2KTrack *t) {
 void MP2K_event_port(struct MP2KPlayerState *p, struct MP2KTrack *t) {
     u8 reg = read_byte(t), val = read_byte(t);
     (void)p;
+    COUNT(E_PORT);
     IO8(0x60 + reg) = val;
 }
 
 void MP2K_event_lfos(struct MP2KPlayerState *p, struct MP2KTrack *t) {
     (void)p;
+    COUNT(E_LFOS);
     t->lfoSpeed = read_byte(t);
     if (!t->lfoSpeed) clear_modM(t);
 }
 
 void MP2K_event_mod(struct MP2KPlayerState *p, struct MP2KTrack *t) {
     (void)p;
+    COUNT(E_MOD);
     t->modDepth = read_byte(t);
     if (!t->modDepth) clear_modM(t);
 }
@@ -291,11 +331,13 @@ void MP2K_event_endtie(struct MP2KPlayerState *p, struct MP2KTrack *t) {
     u8 key;
     (void)p;
     if (*t->cmdPtr < 0x80) {
+
         key = *t->cmdPtr++;
         t->key = key;
     } else {
         key = t->key;
     }
+    COUNT(E_ENDTIE);
     for (c = t->chan; c; c = c->next) {
         if ((c->status & 0x83) && !(c->status & 0x40) && c->untransposedKey == key) {
             c->status |= 0x40;
@@ -308,6 +350,7 @@ void TrackStop(struct MP2KPlayerState *p, struct MP2KTrack *t) {
     struct MixerSource *c;
     (void)p;
     if (!(t->status & 0x80)) return;
+    COUNT(E_TRACKSTOP);
     for (c = t->chan; c; c = c->next) {
         if (c->status) {
             if (c->type & 7) SOUND_INFO->CgbOscOff(c->type & 7);
@@ -401,7 +444,11 @@ void MP2K_event_nxx(u8 clk, struct MP2KPlayerState *p, struct MP2KTrack *t) {
                 }
             }
         }
-        if (!best) return;
+        if (!best) {
+            COUNT(E_NO_CHANNEL);
+            return;
+        }
+        if (best->status & 0xC7) COUNT(E_STEAL);
         c = best;
     }
 
@@ -443,6 +490,8 @@ void MP2K_event_nxx(u8 clk, struct MP2KPlayerState *p, struct MP2KTrack *t) {
     }
     c->status = 0x80;
     t->status &= 0xF0;
+    if (cgb) COUNT(E_NOTE_CGB);
+    else COUNT(E_NOTE_DS);
 }
 
 /* One sequencer tick for every track of a player. Returns the bitmask of tracks still running. */
@@ -457,7 +506,10 @@ static u32 player_tick(struct SoundMixerState *si, struct MP2KPlayerState *p) {
 
         for (c = t->chan; c; c = c->next) {
             if (c->status & 0xC7) {
-                if (c->gateTime && --c->gateTime == 0) c->status |= 0x40;
+                if (c->gateTime && --c->gateTime == 0) {
+                    c->status |= 0x40;
+                    COUNT(E_RELEASE);
+                }
             } else {
                 ClearChain(c);
             }
@@ -620,9 +672,11 @@ static void mix_channel(struct SoundMixerState *si, struct MixerSource *c, s8 *b
             MIX(left[i], vl, s);
             if (--ct == 0) {
                 if (loop_len) {
+                    COUNT(E_LOOP);
                     q = loop_start;
                     ct = loop_len;
                 } else {
+                    COUNT(E_SAMPLE_END);
                     c->status = 0;
                     return;
                 }
@@ -645,9 +699,11 @@ static void mix_channel(struct SoundMixerState *si, struct MixerSource *c, s8 *b
             if (ct <= 0) {
                 s32 back;
                 if (!loop_len) {
+                    COUNT(E_SAMPLE_END);
                     c->status = 0;
                     return;
                 }
+                COUNT(E_LOOP);
                 back = -ct;
                 for (;;) {
                     ct += loop_len;
@@ -681,6 +737,7 @@ static void sound_main_ram(struct SoundMixerState *si, int line_limit) {
     if (dc > 1) seg += (si->framesPerDmaCycle - (dc - 1)) * spf;
 
     if (si->reverb) {
+        COUNT(E_REVERB_FRAME);
         /* Reverb: feed back this segment and the next one (pcmBuffer start when wrapping). */
         s8 *nxt = dc == 2 ? si->pcmBuffer : seg + spf;
         int i;
@@ -735,6 +792,7 @@ static void sound_main_ram(struct SoundMixerState *si, int line_limit) {
                 }
                 st |= 0x04;
                 c->status = st;
+                COUNT(E_ECHO);
             }
         } else if ((st & 3) == 2) { /* decay */
             env = (env * c->decay) >> 8;

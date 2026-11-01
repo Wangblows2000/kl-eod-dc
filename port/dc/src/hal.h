@@ -101,6 +101,7 @@ int hal_audio_init(void);   /* before hal_mem_init: loads the AICA driver */
 void hal_audio_frame(void); /* once per frame, after the VBlank handler; clears hal_audio_busy */
 extern volatile int hal_audio_busy; /* set by hal_frame.c around the VBlank handler */
 void hal_audio_stats_reset(void);
+void hal_m4a_report(void); /* AUDIOCHECK=1: engine behaviours exercised (hal_m4a.c) */
 
 /* hal_input.c */
 void hal_input_poll(void); /* writes REG_KEYINPUT */

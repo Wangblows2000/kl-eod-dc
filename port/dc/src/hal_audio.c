@@ -364,6 +364,7 @@ int hal_audio_init(void) {
     return 0;
 }
 volatile int hal_audio_busy;
+void hal_m4a_report(void) {}
 void hal_audio_frame(void) {}
 void hal_audio_stats_reset(void) {}
 

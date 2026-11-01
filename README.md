@@ -13,14 +13,20 @@ or assets. The ROM and everything derived from it stay on your machine.
     30,000-frame soak.
   - Scene transitions still drop frames.
 - The software renderer is kept as a fallback: hold **Y** at boot, or build with `RENDERER=sw`.
-- **No sound yet**: the PCM mixer is still stubbed.
+- Plays the game's music, sound effects and PSG voices through the AICA:
+  - The engine's assembly half, ported to C, matches the ROM's own code byte for byte on all 165
+    songs.
+  - Gameplay stays at 59.8 fps with sound on.
+  - `AUDIO=0` builds the silent port.
 - **Not yet tested on real hardware.**
 
 See:
 - [docs/dreamcast-port-report.md](docs/dreamcast-port-report.md) — report 1: first boot, the HAL,
   and what kleod provides;
 - [docs/powervr-renderer.md](docs/powervr-renderer.md) — report 2: the PowerVR renderer, the GBA
-  effects Klonoa uses, visual verification, performance and limitations.
+  effects Klonoa uses, visual verification, performance and limitations;
+- [docs/audio.md](docs/audio.md) — report 3: sound, covering the engine port and its
+  differential test, the GBA sound hardware model, the AICA stream, performance and limitations.
 
 ## Use
 
@@ -40,12 +46,20 @@ Build options:
 | `MAX_FRAMES=N` | stop after N frames |
 | `AUTOPLAY=K` | tap START every K frames |
 | `FREEZE=1` | hold the last frame instead of exiting |
+| `AUDIO=0` | silent build |
+| `AUDIOTEST=1` | add a 440 Hz test tone |
+| `AUDIOCHECK=1` | count gaps in the produced sound and report the engine behaviours used |
 
 Options are recorded in `build/options.h`, and changing one rebuilds what depends on it.
 
 Tests, with flycast:
 - `port/dc/tools/regress.sh` — visual regression, PowerVR against the software renderer;
-- `tests/perf.txt` and `tests/soak.txt` with `tools/perfstats.py` — frame rate and timing.
+- `tests/perf.txt` and `tests/soak.txt` with `tools/perfstats.py` — frame rate, timing and
+  sound statistics.
 
-Report 2, §7, has the exact commands. `port/dc/tools/census.py --root .` prints the portability
+Tests on the host:
+- `make test-audio` — the GBA sound model against GBATEK;
+- `tools/m4a_difftest/difftest.py` — the sound engine port against the ROM's code.
+
+Report 2, §7, and report 3, §7, have the exact commands. `port/dc/tools/census.py --root .` prints the portability
 figures used in report 1.

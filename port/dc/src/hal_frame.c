@@ -118,6 +118,7 @@ static void finish_frame(void) {
         hal_log("stopping after %lu frames\n", (unsigned long)hal_frame_count);
         hal_report_memory();
         if (hal_renderer == HAL_RENDER_PVR) hal_pvr_report_features();
+        hal_m4a_report();
 #ifdef HAL_FREEZE
         for (;;) thd_sleep(1000); /* test builds: keep the last frame on screen for capture */
 #endif
