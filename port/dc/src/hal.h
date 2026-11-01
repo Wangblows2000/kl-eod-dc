@@ -47,6 +47,7 @@ void hal_dma_vblank(void);
 /* hal_frame.c */
 extern volatile u32 hal_frame_count;
 void hal_frame_init(void);
+void hal_report_memory(void);
 
 /* Renderers. hal_video.c dispatches to the selected backend:
  *   HAL_RENDER_SW  -- reference scanline software renderer (hal_video_sw.c)

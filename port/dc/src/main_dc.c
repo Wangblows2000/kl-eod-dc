@@ -55,6 +55,7 @@ int main(int argc, char **argv) {
 #ifndef HAL_FAST_SERIAL /* scripted runs report through PERF/SCENE lines; keep dumps unbroken */
     thd_create(true, watchdog, NULL);
 #endif
+    hal_report_memory();
     hal_log("klonoa-dc: entering AgbMain\n");
     AgbMain();
     return 0;

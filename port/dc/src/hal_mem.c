@@ -22,7 +22,7 @@ extern const u8 hal_rom_image_end[];
 #define M1 0x100000u
 
 static u8 *small_arena; /* 640 KiB: EWRAM 256K, IWRAM 64K, IO 64K, PLTT 64K, VRAM 128K, OAM 64K */
-static u8 *rom_arena;   /* 4 MiB */
+static u8 *rom_arena;   /* 4 MiB: the embedded image itself when it is 1 MiB-aligned */
 
 static int map_range(u32 virt, u8 *buf, u32 size, page_size_t ps, u32 psize) {
     u32 off;
@@ -46,13 +46,23 @@ int hal_mem_init(void) {
     }
 
     small_arena = memalign(K64, 10 * K64);
-    rom_arena = memalign(M1, GBA_ROM_SIZE);
-    if (!small_arena || !rom_arena) {
+    if (!small_arena) {
         hal_log("mem: out of memory\n");
         return -1;
     }
     memset(small_arena, 0, 10 * K64);
-    memcpy(rom_arena, hal_rom_image, GBA_ROM_SIZE);
+    /* The embedded image is 1 MiB-aligned (rom_blob.S): map it in place. */
+    if ((uintptr_t)hal_rom_image & (M1 - 1)) {
+        rom_arena = memalign(M1, GBA_ROM_SIZE);
+        if (!rom_arena) {
+            hal_log("mem: out of memory\n");
+            return -1;
+        }
+        memcpy(rom_arena, hal_rom_image, GBA_ROM_SIZE);
+        hal_log("mem: ROM image not 1 MiB-aligned, copied\n");
+    } else {
+        rom_arena = (u8 *)hal_rom_image;
+    }
 
     mmu_init_basic();
 

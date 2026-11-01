@@ -12,8 +12,10 @@
  *   - hal_wait_vcount(n) / hal_wait_vcount_not(n) replace the game's three busy-wait loops on
  *     REG_VCOUNT (patches/game.sed), running the beam to the requested line.
  */
+#include <dc/pvr.h>
 #include <dc/video.h>
 #include <kos.h>
+#include <malloc.h>
 #include <stdarg.h>
 #include <stdio.h>
 
@@ -90,6 +92,14 @@ static void enter_line(int line) {
 
 static u64 t_game_start, t_render;
 
+/* Main RAM (KOS heap) and PowerVR texture RAM in use. */
+void hal_report_memory(void) {
+    struct mallinfo mi = mallinfo();
+    hal_log("MEM main RAM: heap arena %lu KiB, in use %lu KiB; PVR texture RAM free %lu KiB\n",
+            (unsigned long)(mi.arena / 1024), (unsigned long)(mi.uordblks / 1024),
+            (unsigned long)(pvr_mem_available() / 1024));
+}
+
 static void finish_frame(void) {
     hal_input_poll();
     hal_frame_count++;
@@ -105,6 +115,7 @@ static void finish_frame(void) {
     if (!hal_max_frames) hal_max_frames = hal_test_end_frame();
     if ((hal_max_frames && hal_frame_count >= hal_max_frames) || hal_input_quit_requested()) {
         hal_log("stopping after %lu frames\n", (unsigned long)hal_frame_count);
+        hal_report_memory();
 #ifdef HAL_FREEZE
         for (;;) thd_sleep(1000); /* test builds: keep the last frame on screen for capture */
 #endif
