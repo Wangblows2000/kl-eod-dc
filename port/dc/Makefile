@@ -160,3 +160,11 @@ test-audio:
 	@mkdir -p $(BUILD)
 	cc -O2 -Wall -I src -DGBASND_TEST src/hal_gbasnd.c tools/gbasnd_test.c -lm -o $(BUILD)/gbasnd_test
 	$(BUILD)/gbasnd_test
+
+# ---- VMU LCD character (src/hal_vmu_lcd*.c, docs/vmu-lcd.md) --------------------------------
+#   make test-vmu-lcd   host test: conversion, frame sequencing, the Moo, mode choice, send schedule
+.PHONY: test-vmu-lcd
+test-vmu-lcd:
+	@mkdir -p $(BUILD)
+	cc -O2 -Wall -I src src/hal_vmu_lcd_core.c tools/vmu_lcd_test.c -o $(BUILD)/vmu_lcd_test
+	$(BUILD)/vmu_lcd_test $(ROOT)/baserom.gba
