@@ -333,3 +333,26 @@ What the rows show:
   640×480. No real VGA box or television was used.
 - **The bars hold the status line**, which covers rows 458–473 of the bottom bar while a message
   is shown.
+
+## 5. Later: the status line's texture upload (2026-11-01)
+
+A user hit "Fatal: SH4 exception when blocked" in Vision 1-4, under Flycast 2.7 on Windows with a
+real BIOS. Searching for it turned up a real fault in this report's display code.
+
+**The fault.** The status line's texture was uploaded with `pvr_txr_load` whenever its text
+changed. That function copies through the store queues. With the MMU on, KallistiOS remaps the
+store queues through a TLB entry, and blocks of the text's pixels sometimes went to the TA (the
+PowerVR's polygon input) instead of texture memory. Flycast logs this as "Unhandled param type
+pcw ce59ce59", where 0xCE59 is the text colour.
+
+**How it was found.** A crafted save that continues into World 1's visions and a random-input
+exploration run produced 8 such blocks, each after a VMU save changed the text. A stress build
+that changes the text every frame, on the regression route, sends 788 garbage blocks in 3,300
+frames with `pvr_txr_load` and 0 with the fix.
+
+**The fix** (`360deb4`). Every texture upload now uses plain 32-bit stores, as the game's own
+textures already did. The visual regression and the geometry probe still pass.
+
+**Not proven.** Whether this caused the user's crash. It has not been reproduced here: flycast
+runs here use the HLE BIOS, and several long exploration runs from the crafted save did not
+crash with either version.
