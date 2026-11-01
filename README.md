@@ -3,7 +3,8 @@
 It builds the game logic from
 [testyourmine/kleod](https://github.com/testyourmine/kleod) (MIT, © 2026 testyourmine), a matching
 decompilation, natively for the Dreamcast's SH-4 with KallistiOS. This repository holds only the
-port code, `port/dc/`: no game code, data or assets. You supply your own ROM, and everything built from it stays on your machine.
+port code, `port/dc/`: no game code, data or assets. You supply your own ROM, and everything
+built from it stays on your machine.
 
 ## Status
 
