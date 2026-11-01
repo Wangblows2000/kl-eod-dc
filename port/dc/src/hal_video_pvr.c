@@ -6,7 +6,7 @@
  *               the whole BG (text: 256/512 square or rectangular; affine: 128-1024 square). A text
  *               BG texel is (palette bank << 4 | colour), so per-tile 4bpp palettes survive the
  *               conversion; 8bpp BGs store the colour index directly. Only map entries whose value
- *               or character data changed are rebuilt (64 bytes, two store-queue bursts each).
+ *               or character data changed are rebuilt (64 bytes of plain 32-bit stores each).
  *               A BG is then one textured quad per run of lines: scrolling is a UV offset with
  *               texture repeat, and affine BGs are the same quad with affine UVs.
  *   Sprites     OBJ character data is mirrored into 4bpp and 8bpp tile atlases (only changed
@@ -23,9 +23,12 @@
  *               one BG does not multiply the geometry of the others. WIN0/WIN1 split a run into
  *               horizontal segments with their own layer and effect masks.
  *
- * Not implemented (logged once when the game uses it): mosaic, OBJ window, bitmap modes 3-5,
- * mid-frame palette changes. GBA alpha blending (A*EVA + B*EVB) is approximated as
- * A*a + B*(1-a) with a = EVA/16, exact whenever EVA + EVB = 16.
+ *   Mosaic      BG mosaic is drawn from a small block texture (one texel per mosaic block).
+ *
+ * Not implemented (logged once when the game uses it): OBJ mosaic, OBJ window, bitmap modes 3-5,
+ * mid-frame palette changes, a BG switching between text and affine within one frame. GBA alpha
+ * blending (A*EVA + B*EVB) is approximated as A*a + B*(1-a) with a = EVA/16, exact whenever
+ * EVA + EVB = 16.
  */
 #include <dc/pvr.h>
 #include <dc/sq.h>
@@ -1039,7 +1042,7 @@ void hal_pvr_present(void) {
     t1 = hal_now_us();
     hal_prof.wait_us += (u32)(t1 - t0);
 
-    /* texture and palette sync (store queues are free until the scene begins) */
+    /* texture and palette sync, while the previous frame's lists are no longer in use */
     rebuilt = 0;
     sync_gen++;
     {
