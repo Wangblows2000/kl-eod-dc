@@ -1,0 +1,258 @@
+# Vision 1-4 to the end and into Vision 1-5 (tools/vision14_regress.sh). Starts from a save whose
+# game file continues at World 1's vision select with 1-1..1-3 cleared (tools/vmuimg.py vision).
+# Title -> file select -> continue -> vision select, four steps right to Vision 1-4 -> confirm; then
+# the hover-board level with generated input (run right, jump, flutter, wind bullet, some left,
+# up, down and pause), which clears it, and the same input on into Vision 1-5. The level's room
+# transitions write MOSAIC = 0x1110 (frames 3575-3576 and 4766-4767 on this route).
+# Generated with Python's random.seed(1); see the report (docs/vision14-mosaic.md).
+press 300 4 START
+press 450 4 START
+press 600 4 START
+press 750 4 A
+press 1050 4 A
+press 1200 4 START
+press 1700 4 RIGHT
+press 1850 4 RIGHT
+press 2000 4 RIGHT
+press 2150 4 RIGHT
+dump 2290
+press 2300 4 A
+press 2500 4 A
+press 2800 90 RIGHT
+press 2859 8 A
+press 2873 4 B
+press 2895 30 UP
+press 2900 4 B
+press 2935 90 RIGHT
+press 2948 4 B
+press 2964 8 A
+dump 3000
+press 3030 30 DOWN
+press 3040 30 A
+press 3070 90 RIGHT
+press 3113 8 A
+press 3165 90 RIGHT
+press 3221 8 A
+press 3260 90 RIGHT
+press 3285 8 A
+press 3339 4 B
+press 3355 90 RIGHT
+press 3384 40 A
+press 3419 4 B
+press 3450 50 LEFT
+press 3460 30 A
+press 3480 4 B
+press 3510 90 RIGHT
+press 3563 25 A
+dump 3575
+dump 3576
+press 3605 50 LEFT
+press 3615 30 A
+press 3635 4 B
+press 3665 90 RIGHT
+dump 3700
+press 3713 8 A
+press 3760 4 START
+press 3820 4 START
+press 3880 30 DOWN
+press 3890 30 A
+press 3920 90 RIGHT
+press 3960 40 A
+press 3967 4 B
+press 4015 90 RIGHT
+press 4041 40 A
+press 4110 90 RIGHT
+press 4142 40 A
+press 4205 50 LEFT
+press 4215 30 A
+press 4235 4 B
+press 4265 90 RIGHT
+press 4307 25 A
+press 4360 90 RIGHT
+press 4402 8 A
+press 4421 4 B
+press 4455 90 RIGHT
+press 4471 25 A
+press 4550 50 LEFT
+press 4560 30 A
+press 4580 4 B
+press 4610 50 LEFT
+press 4620 30 A
+press 4640 4 B
+press 4670 90 RIGHT
+press 4703 40 A
+press 4765 30 UP
+dump 4766
+dump 4767
+dump 4768
+press 4770 4 B
+dump 4800
+press 4805 90 RIGHT
+press 4818 4 B
+press 4835 25 A
+press 4900 90 RIGHT
+press 4924 40 A
+press 4995 50 LEFT
+dump 5000
+press 5005 30 A
+press 5025 4 B
+press 5055 50 LEFT
+press 5065 30 A
+press 5085 4 B
+press 5115 50 LEFT
+press 5125 30 A
+press 5145 4 B
+press 5175 90 RIGHT
+press 5194 8 A
+press 5270 90 RIGHT
+press 5330 40 A
+press 5345 4 B
+press 5365 90 RIGHT
+press 5409 4 B
+press 5424 40 A
+press 5460 50 LEFT
+press 5470 30 A
+press 5490 4 B
+dump 5500
+press 5520 50 LEFT
+press 5530 30 A
+press 5550 4 B
+press 5580 50 LEFT
+press 5590 30 A
+press 5610 4 B
+press 5640 90 RIGHT
+press 5699 40 A
+press 5735 90 RIGHT
+press 5752 4 B
+press 5789 40 A
+press 5830 90 RIGHT
+press 5858 40 A
+dump 5900
+press 5925 4 START
+press 5985 4 START
+dump 6000
+press 6045 90 RIGHT
+press 6055 4 B
+dump 6100
+press 6102 25 A
+press 6140 90 RIGHT
+press 6153 4 B
+press 6184 40 A
+press 6235 30 UP
+press 6240 4 B
+press 6275 50 LEFT
+press 6285 30 A
+press 6305 4 B
+press 6335 50 LEFT
+press 6345 30 A
+press 6365 4 B
+press 6395 90 RIGHT
+press 6405 40 A
+press 6490 30 UP
+press 6495 4 B
+press 6530 90 RIGHT
+press 6542 4 B
+press 6588 40 A
+dump 6600
+press 6625 90 RIGHT
+press 6649 4 B
+press 6678 25 A
+press 6720 30 UP
+press 6725 4 B
+press 6760 90 RIGHT
+press 6783 8 A
+press 6802 4 B
+press 6855 90 RIGHT
+press 6870 40 A
+press 6902 4 B
+press 6950 90 RIGHT
+press 6963 4 B
+press 6975 25 A
+dump 7000
+press 7045 90 RIGHT
+press 7071 25 A
+press 7140 90 RIGHT
+press 7161 40 A
+press 7235 90 RIGHT
+press 7278 25 A
+press 7330 90 RIGHT
+press 7336 25 A
+press 7360 4 B
+press 7425 90 RIGHT
+press 7462 40 A
+press 7463 4 B
+dump 7500
+press 7520 4 START
+press 7580 4 START
+press 7640 50 LEFT
+press 7650 30 A
+press 7670 4 B
+press 7700 50 LEFT
+press 7710 30 A
+press 7730 4 B
+press 7760 90 RIGHT
+press 7798 40 A
+press 7811 4 B
+press 7855 50 LEFT
+press 7865 30 A
+press 7885 4 B
+press 7915 90 RIGHT
+press 7952 4 B
+press 7967 25 A
+press 8010 30 DOWN
+press 8020 30 A
+press 8050 90 RIGHT
+press 8098 4 B
+press 8109 8 A
+press 8145 50 LEFT
+press 8155 30 A
+press 8175 4 B
+press 8205 90 RIGHT
+press 8219 4 B
+press 8226 8 A
+press 8300 50 LEFT
+press 8310 30 A
+press 8330 4 B
+press 8360 90 RIGHT
+press 8401 25 A
+press 8435 4 B
+press 8455 90 RIGHT
+press 8472 25 A
+dump 8500
+press 8520 4 B
+press 8550 50 LEFT
+press 8560 30 A
+press 8580 4 B
+press 8610 90 RIGHT
+press 8657 25 A
+press 8683 4 B
+press 8705 90 RIGHT
+press 8749 25 A
+press 8800 90 RIGHT
+press 8817 25 A
+press 8895 50 LEFT
+press 8905 30 A
+press 8925 4 B
+press 8955 90 RIGHT
+press 8977 4 B
+press 8987 8 A
+press 9050 30 UP
+press 9055 4 B
+press 9090 4 START
+press 9150 4 START
+press 9210 90 RIGHT
+press 9268 40 A
+press 9305 30 UP
+press 9310 4 B
+press 9345 90 RIGHT
+press 9354 40 A
+press 9372 4 B
+press 9440 90 RIGHT
+press 9479 8 A
+press 9492 4 B
+dump 9500
+press 9535 50 LEFT
+press 9545 30 A
+press 9565 4 B
+press 9595 30 UP
+end 9600

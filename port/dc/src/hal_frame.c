@@ -128,10 +128,12 @@ static void finish_frame(void) {
     hal_prof_frame_end();
     {
         extern u32 gCallbackQueue[]; /* struct CallbackQueue: current[1] is the scene handler */
+        extern u8 gUnk_03004C20[];   /* struct Unk_03004C20: +0x0C level, +0x0D world, +0x0E room */
         static u32 last_scene;
         if (gCallbackQueue[1] != last_scene) {
             last_scene = gCallbackQueue[1];
-            hal_log("SCENE frame=%lu handler=%08lx\n", (unsigned long)hal_frame_count, (unsigned long)last_scene);
+            hal_log("SCENE frame=%lu handler=%08lx world=%d level=%d room=%d\n", (unsigned long)hal_frame_count,
+                    (unsigned long)last_scene, gUnk_03004C20[0x0D], gUnk_03004C20[0x0C], gUnk_03004C20[0x0E]);
         }
     }
     hal_vmu_lcd_frame();

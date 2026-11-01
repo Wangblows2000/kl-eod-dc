@@ -5,6 +5,9 @@
     vmuimg.py fill IMG LEAVE               add a filler file so only LEAVE user blocks stay free
     vmuimg.py corrupt IMG NAME [OFFSET]    flip one byte of file NAME (default: inside its payload)
     vmuimg.py record IMG NAME              print the save record header inside NAME (hal_save_core.h)
+    vmuimg.py vision IMG WORLD LEVEL       test saves: make the newest save's last-used game file
+                                           continue to WORLD's vision select with visions 1..LEVEL-1
+                                           of that world cleared, so LEVEL can be chosen there
 
 VMU file system: block 255 root (FAT at the block in word 0x46, directory at 0x4A for 0x4C blocks,
 user blocks 0..0x50), FAT = one little-endian u16 per block (0xFFFC free, 0xFFFA last in chain),
@@ -12,6 +15,7 @@ user blocks 0..0x50), FAT = one little-endian u16 per block (0xFFFC free, 0xFFFA
 """
 import struct
 import sys
+import zlib
 
 BLK = 512
 
@@ -123,6 +127,75 @@ def cmd_record(path, name):
     print(f"{name}: magic {magic!r} version {ver} header {hb} data {db} seq {seq} data_crc {dcrc:08x}")
 
 
+def crc16_ccitt(data):
+    """KallistiOS net_crc16ccitt (start 0): the VMS header CRC that vmu_pkg_parse checks."""
+    rv = 0
+    for x in data:
+        rv ^= x << 8
+        for _ in range(8):
+            rv = ((rv << 1) ^ 0x1021) & 0xFFFF if rv & 0x8000 else (rv << 1) & 0xFFFF
+    return rv
+
+
+def game_checksums(rec, n):
+    """The game's own add and xor checksums over rec[:n] (kleod src/save.c)."""
+    a = x = 0
+    for b in rec[:n]:
+        a, x = (a + b) & 0xFF, x ^ b
+    return a, x
+
+
+def cmd_vision(path, world, level):
+    """Rewrite the EEPROM image inside the newest of KLONOAEOD_A/B. The scene record (SceneSaveData,
+    EEPROM dwords base+1..5) becomes world WORLD, level LEVEL, scene type vision (1), so "continue"
+    on the file select goes to WORLD's vision select; levelInfo[WORLD-1][0..LEVEL-2] in the file
+    record (FileSaveData, dwords base+6..14) get the "beaten" flag (0x80), which is what lets the
+    vision select reach LEVEL. Both records get the game's checksums again, the save record its
+    CRC-32s (hal_save_core.c) and the VMS file its CRC-16. Everything else is the game's own data."""
+    img = load(path)
+    best = None
+    for name in ("KLONOAEOD_A", "KLONOAEOD_B"):
+        if not any(n == name for _, _, _, n, _ in entries(img)):
+            continue
+        blocks = file_bytes(img, name)
+        data = bytearray(b"".join(bytes(img[b * BLK:(b + 1) * BLK]) for b in blocks))
+        seq = struct.unpack_from("<I", data, 640 + 16)[0]
+        if best is None or seq > best[2]:
+            best = (name, blocks, seq, data)
+    if best is None:
+        raise SystemExit(f"{path}: no Klonoa save")
+    name, blocks, seq, data = best
+    dlen = struct.unpack_from("<I", data, 0x48)[0]
+    chk = bytearray(data)
+    chk[0x46:0x48] = b"\0\0"
+    if crc16_ccitt(chk[:128 + 512 + dlen]) != struct.unpack_from("<H", data, 0x46)[0]:
+        raise SystemExit(f"{name}: VMS CRC does not match; not a file this port wrote")
+    rec = 640
+    ee = bytearray(data[rec + 32:rec + 32 + 512])
+    if zlib.crc32(ee) != struct.unpack_from("<I", data, rec + 20)[0]:
+        raise SystemExit(f"{name}: record data CRC does not match")
+    base = ee[0x30 * 8] * 0x10  # last-used game file
+    scene = bytearray(ee[(base + 1) * 8:(base + 6) * 8])
+    scene[1], scene[2], scene[3] = world, level, 1
+    scene[0x20], scene[0x21] = game_checksums(scene, 0x20)
+    ee[(base + 1) * 8:(base + 6) * 8] = scene
+    frec = bytearray(ee[(base + 6) * 8:(base + 15) * 8])
+    for lv in range(level - 1):
+        frec[8 + (world - 1) * 8 + lv] |= 0x80
+    frec[0x3C], frec[0x3D] = game_checksums(frec, 0x3C)
+    ee[(base + 6) * 8:(base + 15) * 8] = frec
+    data[rec + 32:rec + 32 + 512] = ee
+    struct.pack_into("<I", data, rec + 20, zlib.crc32(ee))
+    struct.pack_into("<I", data, rec + 24, zlib.crc32(bytes(data[rec:rec + 24])))
+    data[0x46:0x48] = b"\0\0"
+    struct.pack_into("<H", data, 0x46, crc16_ccitt(data[:128 + 512 + dlen]))
+    for i, b in enumerate(blocks):
+        img[b * BLK:(b + 1) * BLK] = data[i * BLK:(i + 1) * BLK]
+    open(path, "wb").write(img)
+    print(f"{path}: {name} (seq {seq}), last-used game file (slot {base // 0x10}): continues at world {world} vision select, "
+          f"visions {world}-1..{world}-{level - 1} cleared")
+
+
 def main():
     cmd, path = sys.argv[1], sys.argv[2]
     if cmd == "list":
@@ -133,6 +206,8 @@ def main():
         cmd_corrupt(path, sys.argv[3], int(sys.argv[4]) if len(sys.argv) > 4 else None)
     elif cmd == "record":
         cmd_record(path, sys.argv[3])
+    elif cmd == "vision":
+        cmd_vision(path, int(sys.argv[3]), int(sys.argv[4]))
     else:
         raise SystemExit(__doc__)
 
