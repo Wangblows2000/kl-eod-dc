@@ -1,2 +1,4 @@
 build/
 build-dry/
+build.log
+__pycache__/
