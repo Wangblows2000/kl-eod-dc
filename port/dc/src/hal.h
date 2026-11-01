@@ -92,10 +92,14 @@ struct hal_audio_stats {
     u32 frames, samples, hw_us, m4a_us, poll_us, max_poll_gap_us; /* per 120-frame window */
     int fill_min, fill_max, trim_min, trim_max;
     u32 underruns, underruns_audible, underrun_samples, last_underrun_frame, overflows, psg_triggers; /* totals */
+    u32 catchup_frames, lag_frames_thread, dropped_frames, resyncs; /* totals: lag frames (game thread, poll
+                                                                     thread), of them not queued */
+    u32 quiet_runs; /* total: gaps inside sound in the produced stream (see hal_audio.c) */
 };
 extern struct hal_audio_stats hal_audio_stats;
 int hal_audio_init(void);   /* before hal_mem_init: loads the AICA driver */
-void hal_audio_frame(void); /* once per frame, after the VBlank handler */
+void hal_audio_frame(void); /* once per frame, after the VBlank handler; clears hal_audio_busy */
+extern volatile int hal_audio_busy; /* set by hal_frame.c around the VBlank handler */
 void hal_audio_stats_reset(void);
 
 /* hal_input.c */

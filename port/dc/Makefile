@@ -40,11 +40,12 @@ HAL_OBJS  := $(patsubst src/%.c,$(BUILD)/hal/%.o,$(HAL_SRCS)) $(BUILD)/hal/rom_b
 #   RENDERER=sw|pvr   default renderer (hold Y at boot for the other)
 #   SCRIPT=tests/x.txt  input/dump script for automated runs
 #   MAX_FRAMES=N  AUTOPLAY=K  FREEZE=1  test controls (see README)
-#   AUDIO=0           silent build (no MP2K engine, no AICA output); AUDIOTEST=1 adds a 440 Hz tone
+#   AUDIO=0           silent build (no MP2K engine, no AICA output); AUDIOTEST=1 adds a 440 Hz tone;
+#                     AUDIOCHECK=1 counts gaps in the produced sound (compare with tools/audiocheck.py)
 RENDERER ?= pvr
 AUDIO ?= 1
 OPTIONS := RENDERER=$(RENDERER) PVRDBG=$(PVRDBG) SCRIPT=$(SCRIPT) MAX_FRAMES=$(MAX_FRAMES) AUTOPLAY=$(AUTOPLAY) FREEZE=$(FREEZE) \
-           AUDIO=$(AUDIO) AUDIOTEST=$(AUDIOTEST)
+           AUDIO=$(AUDIO) AUDIOTEST=$(AUDIOTEST) AUDIOCHECK=$(AUDIOCHECK)
 
 INC     := $(BUILD)/include
 GAME_CPPFLAGS := -nostdinc -I $(ROOT)/tools/agbcc/include -iquote $(INC) -DREVISION=0 -DENGLISH -DPLATFORM_DREAMCAST
@@ -93,6 +94,7 @@ $(BUILD)/options.h: FORCE
 	   echo '#define HAL_DEFAULT_RENDERER $(if $(filter sw,$(RENDERER)),0,1)'; \
 	   echo '#define HAL_AUDIO $(if $(filter 0,$(AUDIO)),0,1)'; \
 	   $(if $(AUDIOTEST),echo '#define HAL_AUDIO_TONE 1';) \
+	   $(if $(AUDIOCHECK),echo '#define HAL_AUDIO_CHECK 1';) \
 	   $(if $(MAX_FRAMES),echo '#define HAL_MAX_FRAMES $(MAX_FRAMES)';) \
 	   $(if $(AUTOPLAY),echo '#define HAL_AUTOPLAY $(AUTOPLAY)';) \
 	   $(if $(FREEZE),echo '#define HAL_FREEZE 1';) \

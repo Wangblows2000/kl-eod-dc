@@ -86,8 +86,9 @@ static void enter_line(int line) {
          * OAM/VRAM/palettes for the next frame. */
         hal_video_present();
         hal_dma_vblank();
+        hal_audio_busy = 1; /* keeps the audio thread's lag frames out of the handler's m4aSoundVSync */
         if (irq_enabled(IE_VBLANK, DISPSTAT_VBLANK_INTR)) raise_irq(IE_VBLANK, gIntrTable.vBlank);
-        hal_audio_frame(); /* play this frame's DMA segment and PSG state */
+        hal_audio_frame(); /* play this frame's DMA segment and PSG state; clears hal_audio_busy */
     }
 }
 

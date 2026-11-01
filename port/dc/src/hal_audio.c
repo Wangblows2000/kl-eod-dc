@@ -65,7 +65,7 @@ struct hal_audio_stats hal_audio_stats;
 static s16 ring[RING_FRAMES * 2] __attribute__((aligned(32)));
 static volatile u32 ring_wr, ring_rd; /* stereo frames written / read, free-running */
 static s16 cb_buf[AICA_BUF] __attribute__((aligned(32))); /* one request: up to AICA_BUF/2 per channel */
-static volatile int produced_any, underrun_pending, last_block_loud;
+static volatile int produced_any, underrun_pending, last_block_loud, underrun_to_log;
 static s16 last_l, last_r;
 static snd_stream_hnd_t stream = SND_STREAM_INVALID;
 
@@ -109,6 +109,50 @@ static void *stream_cb(snd_stream_hnd_t hnd, int bytes_req, int *bytes_recv) {
     return cb_buf;
 }
 
+/* ---- keeping the sound in real time ----------------------------------------------------- *
+ *
+ * The sound engine advances once per emulated frame, and an emulated frame lasts as long as the
+ * game takes over it. When a frame takes longer than 1/60 s on the Dreamcast -- a heavy scene, a
+ * scene load -- that alone would leave the music behind and the ring dry. The GBA does not have
+ * this problem: its VBlank interrupt keeps firing while the main loop is busy, and the game's
+ * VBlank handlers run the sound engine themselves on such lag frames
+ * (VBlankIntr_Common: `if (!gFrameFinished) m4aSoundMain()`).
+ *
+ * The port does the same. next_due_ns is when the next sound frame is due. Whenever real time has
+ * passed it, a "lag frame" runs: SoundMain, m4aSoundVSync and one block, the order the GBA's
+ * handler and DMA give. Two places run them:
+ *   - the poll thread, every few milliseconds, once a frame is half a frame overdue -- so the
+ *     music keeps going *during* a long frame.
+ *     It has the higher priority, so like the GBA's interrupt it runs to completion while the game
+ *     thread waits. It stays out while the game thread is inside the VBlank handler or its own
+ *     audio frame (hal_audio_busy), or inside an MP2K call (the engine's lock word, which the
+ *     engine already checks against interrupts on the GBA);
+ *   - the game thread after its own frame, for anything the poll thread could not do.
+ * A lag frame's block is queued only while the ring is below target plus one frame; otherwise it is
+ * dropped (the engine still advances, so the music stays in time without adding latency). More
+ * than CATCHUP_MAX frames behind -- a multi-second stall -- it resynchronises instead. The game
+ * never reads sound state, so none of this changes game logic or the frame-indexed tests. */
+#define FRAME_NS 16683350ull /* 1 / 59.94 Hz */
+#define CATCHUP_MAX 8
+void SoundMain(void);
+void m4aSoundVSync(void);
+static u64 next_due_ns;
+volatile int hal_audio_busy;
+static void produce(int keep);
+
+static void run_lag_frames(u64 now, u32 *counter) {
+    int n = 0;
+    while (now >= next_due_ns && n++ < CATCHUP_MAX) {
+        struct mixer_view *si = SOUND_INFO;
+        if (!si || si->lockStatus != ID_NUMBER) return; /* not initialised, or inside the engine */
+        SoundMain();
+        m4aSoundVSync();
+        produce((int)(ring_wr - ring_rd) < TARGET_FILL + OUT_PER_FRAME);
+        (*counter)++;
+        next_due_ns += FRAME_NS;
+    }
+}
+
 static void *poll_thread(void *arg) {
     u64 last = 0;
     (void)arg;
@@ -117,6 +161,9 @@ static void *poll_thread(void *arg) {
         if (last && t0 - last > hal_audio_stats.max_poll_gap_us) hal_audio_stats.max_poll_gap_us = (u32)(t0 - last);
         last = t0;
         snd_stream_poll(stream);
+        /* Half a frame of slack: an on-time game frame that arrives a little late is not a lag frame. */
+        if (!hal_audio_busy && next_due_ns && hal_now_us() * 1000ull >= next_due_ns + FRAME_NS / 2)
+            run_lag_frames(hal_now_us() * 1000ull - FRAME_NS / 2, &hal_audio_stats.lag_frames_thread);
         hal_audio_stats.poll_us += (u32)(hal_now_us() - t0);
         thd_sleep(POLL_MS);
     }
@@ -128,7 +175,39 @@ static void *poll_thread(void *arg) {
 static int trim_ema = TARGET_FILL << 4;
 
 
-void hal_audio_frame(void) {
+/* Test aid: count "gaps inside sound" in what is produced, by the same rule as tools/audiocheck.py
+ * applies to an emulator capture (>= 4 ms below 64 with > 1024 within 50 ms before and after). If
+ * the two counts agree, the gaps a capture shows are in the game's sound itself, not made by the
+ * ring or the stream. */
+#ifdef HAL_AUDIO_CHECK
+static void count_quiet_runs(const s16 *b, int n) {
+    static int quiet_len, since_loud = 1 << 30, pending_wait = -1;
+    const int min_len = GBASND_RATE * 4 / 1000, ctx = GBASND_RATE * 50 / 1000;
+    int i;
+    for (i = 0; i < n; i++) {
+        int l = b[2 * i] < 0 ? -b[2 * i] : b[2 * i], r = b[2 * i + 1] < 0 ? -b[2 * i + 1] : b[2 * i + 1];
+        int m = l > r ? l : r;
+        if (pending_wait >= 0) {
+            if (m > 1024) {
+                hal_audio_stats.quiet_runs++;
+                pending_wait = -1;
+            } else if (--pending_wait < 0) {
+                pending_wait = -1;
+            }
+        }
+        if (m < 64) {
+            quiet_len++;
+        } else {
+            if (quiet_len >= min_len && since_loud - quiet_len <= ctx) pending_wait = ctx;
+            quiet_len = 0;
+        }
+        since_loud = m > 1024 ? 0 : since_loud + 1;
+    }
+}
+#endif
+
+/* Render the segment DMA plays now plus the PSG into one block; append it to the ring if `keep`. */
+static void produce(int keep) {
     u64 t0 = hal_now_us();
     struct mixer_view *si = SOUND_INFO;
     const s8 *seg_a = NULL, *seg_b = NULL;
@@ -149,9 +228,8 @@ void hal_audio_frame(void) {
 
     /* Block length: nominal 3 x 224, trimmed by up to TRIM_MAX toward the target fill. */
     fill = (int)(wr - ring_rd);
-    if (underrun_pending && produced_any)
-        hal_log("AUDIO underrun before frame %lu (%s)\n", (unsigned long)hal_frame_count,
-                last_block_loud ? "audible" : "during silence");
+    if (underrun_pending && produced_any && !underrun_to_log) /* logged by the game thread (hal_audio_frame) */
+        underrun_to_log = last_block_loud ? 2 : 1;
     if (underrun_pending || !produced_any) {
         /* After a gap (or at start): refill to the target with silence instead of speeding up. */
         int pad = TARGET_FILL - fill;
@@ -168,6 +246,13 @@ void hal_audio_frame(void) {
     if (trim > TRIM_MAX) trim = TRIM_MAX;
     if (trim < -TRIM_MAX) trim = -TRIM_MAX;
     n = spf * OUT_MULT + trim;
+    if (!keep) {
+        s16 scratch[GBASND_MAX_SAMPLES * 2];
+        gbasnd_render(scratch, n, seg_a, seg_b, spf); /* keeps the PSG running in step */
+        hal_audio_stats.dropped_frames++;
+        hal_audio_stats.hw_us += (u32)(hal_now_us() - t0);
+        return;
+    }
     if ((int)(wr - ring_rd) + n > RING_FRAMES) {
         hal_audio_stats.overflows++;
         n = 0;
@@ -176,6 +261,9 @@ void hal_audio_frame(void) {
     {
         s16 block[GBASND_MAX_SAMPLES * 2];
         int peak = gbasnd_render(block, n, seg_a, seg_b, spf), j;
+#ifdef HAL_AUDIO_CHECK /* AUDIOCHECK=1 test builds only */
+        count_quiet_runs(block, n);
+#endif
         for (j = 0; j < n; j++, wr++) {
             u32 k2 = (wr & (RING_FRAMES - 1)) * 2;
             ring[k2] = block[2 * j];
@@ -196,6 +284,26 @@ void hal_audio_frame(void) {
     if (fill > hal_audio_stats.fill_max) hal_audio_stats.fill_max = fill;
     hal_audio_stats.psg_triggers = gbasnd_triggers;
     hal_audio_stats.hw_us += (u32)(hal_now_us() - t0);
+}
+
+/* Called by hal_frame.c right after the VBlank handler, which it brackets with hal_audio_busy. */
+void hal_audio_frame(void) {
+    u64 now;
+    produce(1);
+    if (underrun_to_log) { /* only this thread writes to the serial log: it may be mid-way through a frame dump */
+        hal_log("AUDIO underrun before frame %lu (%s)\n", (unsigned long)hal_frame_count,
+                underrun_to_log == 2 ? "audible" : "during silence");
+        underrun_to_log = 0;
+    }
+    now = hal_now_us() * 1000ull;
+    if (!next_due_ns || now > next_due_ns + CATCHUP_MAX * FRAME_NS) {
+        if (next_due_ns) hal_audio_stats.resyncs++;
+        next_due_ns = now;
+    }
+    next_due_ns += FRAME_NS;
+    run_lag_frames(now, &hal_audio_stats.catchup_frames);
+    if (next_due_ns > now + 2 * FRAME_NS) next_due_ns = now + FRAME_NS; /* ahead of real time: never wait */
+    hal_audio_busy = 0;
 }
 
 int hal_audio_init(void) {
@@ -224,7 +332,10 @@ int hal_audio_init(void) {
 void hal_audio_stats_reset(void) {
     u32 under = hal_audio_stats.underruns, under_s = hal_audio_stats.underrun_samples,
         last = hal_audio_stats.last_underrun_frame, trig = hal_audio_stats.psg_triggers,
-        audible = hal_audio_stats.underruns_audible,
+        audible = hal_audio_stats.underruns_audible, catchup = hal_audio_stats.catchup_frames,
+        dropped = hal_audio_stats.dropped_frames, resyncs = hal_audio_stats.resyncs,
+        lag_thread = hal_audio_stats.lag_frames_thread,
+        quiet = hal_audio_stats.quiet_runs,
         over = hal_audio_stats.overflows;
     memset(&hal_audio_stats, 0, sizeof hal_audio_stats);
     /* totals survive the per-window reset */
@@ -234,6 +345,11 @@ void hal_audio_stats_reset(void) {
     hal_audio_stats.psg_triggers = trig;
     hal_audio_stats.overflows = over;
     hal_audio_stats.underruns_audible = audible;
+    hal_audio_stats.catchup_frames = catchup;
+    hal_audio_stats.dropped_frames = dropped;
+    hal_audio_stats.resyncs = resyncs;
+    hal_audio_stats.lag_frames_thread = lag_thread;
+    hal_audio_stats.quiet_runs = quiet;
     hal_audio_stats.fill_min = 1 << 30;
     hal_audio_stats.fill_max = -1;
     hal_audio_stats.trim_min = 99;
@@ -247,6 +363,7 @@ int hal_audio_init(void) {
     hal_log("audio: disabled (AUDIO=0)\n");
     return 0;
 }
+volatile int hal_audio_busy;
 void hal_audio_frame(void) {}
 void hal_audio_stats_reset(void) {}
 

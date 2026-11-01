@@ -223,7 +223,7 @@ static void set_inc(struct psg_ch *c, u32 inc) {
 }
 
 /* Square: high for duty/8 of the period; 0..256 */
-static int square_avg(struct psg_ch *c) {
+static inline int square_avg(struct psg_ch *c) {
     u32 p = c->phase, inc = c->inc, e = p + inc, hi = (u32)c->duty << 29, area;
     c->phase = e;
     if (c->inc_over) return c->duty * 32; /* above the output rate: its average */
@@ -243,7 +243,7 @@ static u64 wave_cum(const struct psg_ch *c, u32 x) {
     return ((u64)c->wave_sum[st] << 27) + (u64)(x & 0x7FFFFFF) * c->wave[st];
 }
 
-static int wave_avg(struct psg_ch *c) {
+static inline int wave_avg(struct psg_ch *c) {
     u32 p = c->phase, inc = c->inc, e = p + inc;
     u64 area;
     c->phase = e;
@@ -308,13 +308,28 @@ static void psg_render(int i0, int i1, u8 nr51, u8 nr32) {
             if (ch < 3) c->phase += c->inc * (u32)(i1 - i0);
             continue;
         }
-        for (i = i0; i < i1; i++) {
-            s32 v;
-            if (ch < 2) v = square_avg(c) * vol;
-            else if (ch == 2) v = (wave_avg(c) * mul) >> shift;
-            else v = noise_avg(c) * vol;
-            if (to_l) mix_l[i] += v;
-            if (to_r) mix_r[i] += v;
+        /* one loop per waveform and routing, so the per-sample work has no branches to take */
+        if (ch < 2) {
+            if (to_l && to_r)
+                for (i = i0; i < i1; i++) {
+                    s32 v = square_avg(c) * vol;
+                    mix_l[i] += v;
+                    mix_r[i] += v;
+                }
+            else
+                for (i = i0; i < i1; i++) (to_l ? mix_l : mix_r)[i] += square_avg(c) * vol;
+        } else if (ch == 2) {
+            for (i = i0; i < i1; i++) {
+                s32 v = (wave_avg(c) * mul) >> shift;
+                if (to_l) mix_l[i] += v;
+                if (to_r) mix_r[i] += v;
+            }
+        } else {
+            for (i = i0; i < i1; i++) {
+                s32 v = noise_avg(c) * vol;
+                if (to_l) mix_l[i] += v;
+                if (to_r) mix_r[i] += v;
+            }
         }
     }
 }
@@ -372,26 +387,34 @@ int gbasnd_render(s16 *out, int n, const s8 *seg_a, const s8 *seg_b, int spf) {
             i++;
         }
 
+        /* DirectSound contribution per FIFO sample, with the bias already added */
+        s16 ds_l[GBASND_MAX_SEG], ds_r[GBASND_MAX_SEG];
+        for (i = 0; i < spf; i++) {
+            s32 l = bias, r = bias;
+            if (a_r) r += a[i] << a_sh;
+            if (a_l) l += a[i] << a_sh;
+            if (b_r) r += b[i] << b_sh;
+            if (b_l) l += b[i] << b_sh;
+            ds_l[i] = (s16)l;
+            ds_r[i] = (s16)r;
+        }
+        if (!master) { /* SOUNDCNT_X off: the DAC sees only the bias */
+            psg_on = 0;
+            for (i = 0; i < spf; i++) ds_l[i] = ds_r[i] = (s16)bias;
+        }
         for (i = 0; i < n; i++, kacc += kstep) {
             int k = kacc >> 16;
-            s32 l = 0, r = 0, vl, vr;
+            s32 l = ds_l[k], r = ds_r[k], vl, vr;
             if (psg_on) {
-                l = (mix_l[i] * kl) >> shift;
-                r = (mix_r[i] * kr) >> shift;
+                l += (mix_l[i] * kl) >> shift;
+                r += (mix_r[i] * kr) >> shift;
             }
-            if (a_r) r += a[k] << a_sh;
-            if (a_l) l += a[k] << a_sh;
-            if (b_r) r += b[k] << b_sh;
-            if (b_l) l += b[k] << b_sh;
-            if (!master) l = r = 0;
 #ifdef HAL_AUDIO_TONE
             tone_phase += (u32)((440ull << 32) / GBASND_RATE); /* test build: 440 Hz square at 1/4 scale */
             l += (tone_phase >> 31) ? 128 : -128;
             r += (tone_phase >> 31) ? 128 : -128;
 #endif
-            /* GBA DAC: bias, clip to 10 bits, SOUNDBIAS resolution; then AC coupling (~25 Hz) */
-            l += bias;
-            r += bias;
+            /* GBA DAC: (bias added above) clip to 10 bits, SOUNDBIAS resolution; AC coupling (~25 Hz) */
             l = l < 0 ? 0 : l > 0x3FF ? 0x3FF : l;
             r = r < 0 ? 0 : r > 0x3FF ? 0x3FF : r;
             l = ((l & keep) - bias) << 8;
