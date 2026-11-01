@@ -355,4 +355,6 @@ textures already did. The visual regression and the geometry probe still pass.
 
 **Not proven.** Whether this caused the user's crash. It has not been reproduced here: flycast
 runs here use the HLE BIOS, and several long exploration runs from the crafted save did not
-crash with either version.
+crash with either version. A later report from the same user, of graphics that break for good in
+Vision 1-4's last room, led to a separate and more serious renderer bug (a mosaic buffer overflow)
+that also explains the crash better; see [report 6](vision14-mosaic.md).
