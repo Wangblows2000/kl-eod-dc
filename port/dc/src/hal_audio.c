@@ -14,10 +14,10 @@
  * Output: one 16-bit stereo KallistiOS snd_stream at 3 x 224 samples per Dreamcast frame
  * (~40.28 kHz). A dedicated thread polls it; the stream callback copies from the ring. The ring
  * is single-producer (game thread, once per frame) / single-consumer (poll thread): each side
- * only writes its own index, after the data it covers, and both are static, so nothing the AICA
- * DMA reads can be freed (KallistiOS copies the callback's data into its own buffer before the
- * DMA starts). On an underrun the callback still returns everything it was asked for, fading the
- * last sample to silence, so the AICA never replays stale buffer contents; the producer then
+ * only writes its own index, after the data it covers. The callback splits the two channels and
+ * writes them into sound RAM itself (stream_cb). On an underrun the callback still returns
+ * everything it was asked for, fading the last sample to silence, so the AICA never replays stale
+ * buffer contents; the producer then
  * refills the ring to its target with silence rather than speeding up. A small trim of the block
  * length (at most 4 samples a frame, 0.6%) keeps the ring near its target and absorbs drift
  * between the Dreamcast's video and audio clocks.
@@ -27,6 +27,7 @@
  */
 #include <dc/sound/sound.h>
 #include <dc/sound/stream.h>
+#include <dc/spu.h>
 #include <kos/thread.h>
 #include <string.h>
 
@@ -64,26 +65,33 @@ struct hal_audio_stats hal_audio_stats;
 
 static s16 ring[RING_FRAMES * 2] __attribute__((aligned(32)));
 static volatile u32 ring_wr, ring_rd; /* stereo frames written / read, free-running */
-static s16 cb_buf[AICA_BUF] __attribute__((aligned(32))); /* one request: up to AICA_BUF/2 per channel */
+/* One request: up to AICA_BUF/2 samples per channel, split here into the two channel buffers. */
+static s16 cb_l[AICA_BUF / 2] __attribute__((aligned(32))), cb_r[AICA_BUF / 2] __attribute__((aligned(32)));
 static volatile int produced_any, underrun_pending, last_block_loud, underrun_to_log;
 static s16 last_l, last_r;
 static snd_stream_hnd_t stream = SND_STREAM_INVALID;
 
-static void *stream_cb(snd_stream_hnd_t hnd, int bytes_req, int *bytes_recv) {
-    u32 want = (u32)bytes_req / 4, avail, n, i, rd = ring_rd;
-    s16 *out = cb_buf;
+/* The stream callback, in KallistiOS's "direct" form: it is given the two channel buffers in sound
+ * RAM and writes them itself. The port does not use the ordinary form (interleaved L,R handed back
+ * to KallistiOS), because KallistiOS v2.3.0 splits interleaved 16-bit stereo with
+ * snd_pcm16_split (snd_pcm_split.s), and under the SH-4's XTRCT semantics that routine puts the
+ * right samples in the left buffer and vice versa, and swaps every pair of samples in time: a 1 kHz
+ * tone came out on the wrong side with sidebands at fs/2 +- 1 kHz, and music lost its treble to a
+ * mirrored copy of itself (fs - f) -- the "crunchy, bassy" sound. See docs/audio.md. */
+static size_t stream_cb(snd_stream_hnd_t hnd, uintptr_t left, uintptr_t right, size_t size_req) {
+    u32 want = (u32)size_req / 4, avail, n, i, rd = ring_rd; /* size_req: bytes for both channels */
     (void)hnd;
     if (want > AICA_BUF / 2) want = AICA_BUF / 2;
     avail = ring_wr - rd;
     n = avail < want ? avail : want;
     for (i = 0; i < n; i++) {
         u32 k = ((rd + i) & (RING_FRAMES - 1)) * 2;
-        out[2 * i] = ring[k];
-        out[2 * i + 1] = ring[k + 1];
+        cb_l[i] = ring[k];
+        cb_r[i] = ring[k + 1];
     }
     if (n) {
-        last_l = out[2 * n - 2];
-        last_r = out[2 * n - 1];
+        last_l = cb_l[n - 1];
+        last_r = cb_r[n - 1];
     }
     __asm__ volatile("" ::: "memory");
     ring_rd = rd + n;
@@ -92,8 +100,8 @@ static void *stream_cb(snd_stream_hnd_t hnd, int bytes_req, int *bytes_recv) {
         for (i = n; i < want; i++) {
             last_l = (s16)(last_l - (last_l >> 5) - (last_l > 0) + (last_l < 0));
             last_r = (s16)(last_r - (last_r >> 5) - (last_r > 0) + (last_r < 0));
-            out[2 * i] = last_l;
-            out[2 * i + 1] = last_r;
+            cb_l[i] = last_l;
+            cb_r[i] = last_r;
         }
         if (produced_any) {
             if (!underrun_pending) { /* count gaps, not the callbacks inside one gap */
@@ -105,8 +113,16 @@ static void *stream_cb(snd_stream_hnd_t hnd, int bytes_req, int *bytes_recv) {
             underrun_pending = 1;
         }
     }
-    *bytes_recv = (int)(want * 4);
-    return cb_buf;
+    /* Plain G2 writes (spu_memload): the store-queue copy waits on sq_lock while the renderer
+     * uploads textures, which held this thread up for milliseconds at a time. left/right carry the
+     * uncached-area base; spu_memload wants sound-RAM offsets. */
+    {
+        u64 t0 = hal_now_us();
+        spu_memload(left & 0x1FFFFF, cb_l, want * 2);
+        spu_memload(right & 0x1FFFFF, cb_r, want * 2);
+        hal_audio_stats.spu_us += (u32)(hal_now_us() - t0);
+    }
+    return want * 4;
 }
 
 /* ---- keeping the sound in real time ----------------------------------------------------- *
@@ -312,11 +328,12 @@ int hal_audio_init(void) {
         hal_log("audio: snd_stream_init failed\n");
         return -1;
     }
-    stream = snd_stream_alloc(stream_cb, AICA_BUF);
+    stream = snd_stream_alloc(NULL, AICA_BUF);
     if (stream == SND_STREAM_INVALID) {
         hal_log("audio: no stream\n");
         return -1;
     }
+    snd_stream_set_callback_direct(stream, stream_cb);
     snd_stream_volume(stream, 255);
     snd_stream_start(stream, OUT_RATE, 1);
     {

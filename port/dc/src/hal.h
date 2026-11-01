@@ -94,6 +94,7 @@ struct hal_audio_stats {
     u32 underruns, underruns_audible, underrun_samples, last_underrun_frame, overflows, psg_triggers; /* totals */
     u32 catchup_frames, lag_frames_thread, dropped_frames, resyncs; /* totals: lag frames (game thread, poll
                                                                      thread), of them not queued */
+    u32 spu_us; /* window: time writing the stream's sound RAM (in poll_us) */
     u32 quiet_runs; /* total: gaps inside sound in the produced stream (see hal_audio.c) */
 };
 extern struct hal_audio_stats hal_audio_stats;
