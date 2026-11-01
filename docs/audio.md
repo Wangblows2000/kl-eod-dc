@@ -1,7 +1,9 @@
 # Klonoa: Empire of Dreams → Dreamcast: technical report 3 — sound
 
-*2026-11-01. All figures come from the scripted runs and host tests in §7, under flycast. Nothing
-here has been run or heard on real Dreamcast hardware.*
+*2026-11-01, updated the same day with §8 (the fix for the crunchy, bassy output; the figures in
+the summary, §2, §5 and §6 are from the code after it). All figures come from the scripted runs
+and host tests in §7, under flycast. Nothing here has been run or heard on real Dreamcast
+hardware.*
 
 ## Summary
 

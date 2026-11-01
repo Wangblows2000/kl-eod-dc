@@ -3,6 +3,10 @@
 *2026-10-31. Every figure comes from a build or a script in this repository. Run
 `port/dc/tools/census.py` after the builds to reproduce them.*
 
+> **Later:** the "no sound" and stubbed-mixer statements below describe the port at this report.
+> The MP2K mixer and sequencer have since been ported and the port plays sound through the AICA;
+> see [report 3](audio.md).
+
 ## Summary
 
 **Can kleod be the foundation for a native Dreamcast port? Yes.** Its game logic compiles for the

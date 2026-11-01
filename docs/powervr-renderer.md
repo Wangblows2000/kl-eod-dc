@@ -3,6 +3,10 @@
 *2026-11-01. All figures come from the scripted runs in §7, under flycast (headless, HLE BIOS,
 framebuffer emulation on). Nothing here has been run on real Dreamcast hardware.*
 
+> **Later:** the "no sound" statements below describe the port at this report. Sound has since
+> landed; see [report 3](audio.md). The visual regression of §7 still passes with sound on, with
+> dumps bit-identical to the silent build's.
+
 ## Summary
 
 The PowerVR renderer is now the default. The software renderer from report 1 is still built in:

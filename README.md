@@ -16,6 +16,9 @@ or assets. The ROM and everything derived from it stay on your machine.
 - Plays the game's music, sound effects and PSG voices through the AICA:
   - The engine's assembly half, ported to C, matches the ROM's own code byte for byte on all 165
     songs.
+  - What the AICA plays matches what the port produces, checked sample by sample in flycast. A
+    KallistiOS stereo-split fault that made the sound muffled and crunchy (and the opening NAMCO
+    voice noisy) is worked around; see report 3, §8.
   - Gameplay stays at 59.8 fps with sound on.
   - `AUDIO=0` builds the silent port.
 - **Not yet tested on real hardware.**
@@ -26,7 +29,8 @@ See:
 - [docs/powervr-renderer.md](docs/powervr-renderer.md) — report 2: the PowerVR renderer, the GBA
   effects Klonoa uses, visual verification, performance and limitations;
 - [docs/audio.md](docs/audio.md) — report 3: sound, covering the engine port and its
-  differential test, the GBA sound hardware model, the AICA stream, performance and limitations.
+  differential test, the GBA sound hardware model, the AICA stream, performance and limitations;
+  §8 is the stage-by-stage diagnosis and fix of the crunchy, bassy output.
 
 ## Use
 
@@ -60,6 +64,7 @@ Tests, with flycast:
   sound statistics;
 - `port/dc/tools/audio_regress.sh` — sound, stage by stage: the Namco voice against the
   cartridge's own engine, and what the AICA plays against what the port produced (report 3, §8).
+  It needs flycast with `port/dc/tools/flycast-test-hooks.patch` applied, and numpy and unicorn.
 
 Tests on the host:
 - `make test-audio` — the GBA sound model against GBATEK;
@@ -74,7 +79,9 @@ portability figures used in report 1.
 copy of the game into a bootable Dreamcast disc image, `port/dc/out/klonoa-dc.cdi`.
 
 > **Emulator-tested only.** The CDI this produces has been booted in the Flycast emulator (HLE
-> BIOS), reaching the title screen with sound, and checked with `port/dc/tools/cdicheck.py`. It
+> BIOS), reaching the title screen with sound, and checked with `port/dc/tools/cdicheck.py`; its
+> opening NAMCO jingle and voice were compared numerically with what the port produces (report 3,
+> §8). It
 > has **not** been tried on a real Dreamcast, burned to a CD-R or loaded from an optical drive
 > emulator. Flycast running it is not evidence that hardware will.
 
