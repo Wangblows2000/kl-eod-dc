@@ -10,6 +10,17 @@
 void CpuSet(const void *src, void *dest, u32 control) {
     u32 n = control & 0x1FFFFF;
     int fixed = (control & 0x01000000) != 0;
+    u32 unit = control & 0x04000000 ? 4 : 2;
+    /* The BIOS refuses a source in its own region; writes to unmapped memory have no effect. */
+    if (!hal_gba_range_ok((u32)(uintptr_t)src, fixed ? unit : n * unit, 0) ||
+        !hal_gba_range_ok((u32)(uintptr_t)dest, n * unit, 1)) {
+        static int logged;
+        if (logged < 4) {
+            logged++;
+            hal_log("CpuSet: %p -> %p (%lu units) outside mapped memory, ignored\n", src, dest, (unsigned long)n);
+        }
+        return;
+    }
     if (control & 0x04000000) {
         const volatile u32 *s = (const volatile u32 *)((uintptr_t)src & ~3u);
         volatile u32 *d = (volatile u32 *)((uintptr_t)dest & ~3u);

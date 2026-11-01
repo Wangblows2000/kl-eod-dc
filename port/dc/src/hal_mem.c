@@ -94,3 +94,29 @@ int hal_mem_init(void) {
     hal_log("mem: GBA address space mapped (14 static TLB entries)\n");
     return 0;
 }
+
+/* Is [addr, addr + len) backed by memory the game may write (write = 1) or read (write = 0)?
+ *
+ * On the GBA, a DMA or CpuSet that targets the BIOS (0x00000000) or an unused region simply has no
+ * effect, and the game relies on that: VBlankIntr_Common copies BG1's tilemap to
+ * gBgInfo[1].pTilemap every frame, and during the boot screen that pointer is still NULL. Here
+ * those addresses have no TLB entry, so the write must be dropped before it reaches the MMU --
+ * under flycast it landed in unrelated Dreamcast memory (which variable depended on the link
+ * layout), and on hardware it would raise a TLB-miss exception. Pointers into Dreamcast RAM
+ * (P1 0x8C000000-0x8CFFFFFF: the game's stack and statics) are accepted as they are.
+ */
+int hal_gba_range_ok(u32 addr, u32 len, int write) {
+    u32 end = addr + len;
+    if (end < addr) return 0;
+    if (addr >= 0x8C000000u && end <= 0x8D000000u) return 1;
+    switch (addr >> 24) {
+    case 0x02: return end <= GBA_EWRAM + 4 * K64;
+    case 0x03: return end <= GBA_IWRAM + K64;
+    case 0x04: return end <= GBA_IO + K64;
+    case 0x05: return end <= GBA_PLTT + K64;
+    case 0x06: return end <= GBA_VRAM + 2 * K64;
+    case 0x07: return end <= GBA_OAM + K64;
+    case 0x08: return !write && end <= GBA_ROM + GBA_ROM_SIZE;
+    default: return 0;
+    }
+}

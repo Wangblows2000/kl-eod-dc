@@ -112,7 +112,6 @@ static void finish_frame(void) {
             hal_log("SCENE frame=%lu handler=%08lx\n", (unsigned long)hal_frame_count, (unsigned long)last_scene);
         }
     }
-    if (!hal_max_frames) hal_max_frames = hal_test_end_frame();
     if ((hal_max_frames && hal_frame_count >= hal_max_frames) || hal_input_quit_requested()) {
         hal_log("stopping after %lu frames\n", (unsigned long)hal_frame_count);
         hal_report_memory();
@@ -167,5 +166,6 @@ void hal_wait_vcount_not(int line) {
 
 void hal_frame_init(void) {
     hal_frame_count = 0;
+    if (!hal_max_frames) hal_max_frames = hal_test_end_frame();
     enter_line(0);
 }

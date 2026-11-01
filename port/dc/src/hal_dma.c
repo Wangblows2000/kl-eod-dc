@@ -40,6 +40,23 @@ static u32 transfer(struct dma_chan *c, int ch) {
 
     if (n == 0) n = ch == 3 ? 0x10000u : 0x4000u;
 
+    {
+        /* Lowest and highest byte touched on each side (a decrementing pointer goes down). */
+        u32 dlo = dstep < 0 ? d - (n - 1) * step : d, dlen = dstep ? n * step : step;
+        u32 slo = sstep < 0 ? s - (n - 1) * step : s, slen = sstep ? n * step : step;
+        if (!hal_gba_range_ok(dlo, dlen, 1) || !hal_gba_range_ok(slo, slen, 0)) {
+            static int logged;
+            if (logged < 4) {
+                logged++;
+                hal_log("dma%d: %08lx -> %08lx (%lu units) outside mapped memory, dropped as on hardware\n", ch,
+                        (unsigned long)c->src, (unsigned long)c->dst, (unsigned long)n);
+            }
+            c->src = s + (u32)sstep * n;
+            c->dst = dst_mode == 3 ? c->dst_reload : d + (u32)dstep * n;
+            return n;
+        }
+    }
+
     /* Fast paths for the overwhelmingly common fills and copies. */
     if (sstep == step && dstep == step) {
         memmove((void *)d, (const void *)s, n * step);

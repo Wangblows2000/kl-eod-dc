@@ -1,6 +1,6 @@
 /* Test and profiling support (compiled into every build; inert unless a script is linked in).
  *
- * Scripts (tests/*.txt, turned into build/hal/test_script.c by tools/script2c.py):
+ * Scripts (tests/<name>.txt, turned into build/hal/test_script.c by tools/script2c.py):
  *   press  <frame> <frames> <KEYS...>   hold keys (A B SELECT START RIGHT LEFT UP DOWN R L)
  *   dump   <frame>                      dump the finished frame over serial (base64 BGR555)
  *   end    <frame>                      stop the run (freeze or exit, see HAL_FREEZE)

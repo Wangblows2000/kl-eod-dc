@@ -33,6 +33,8 @@ typedef int32_t s32;
 #define GBA_IWRAM_SIZE 0x8000u
 #define GBA_ROM_SIZE 0x400000u
 
+int hal_gba_range_ok(u32 addr, u32 len, int write); /* hal_mem.c */
+
 #define IO16(off) (*(volatile u16 *)(GBA_IO + (off)))
 #define IO32(off) (*(volatile u32 *)(GBA_IO + (off)))
 
