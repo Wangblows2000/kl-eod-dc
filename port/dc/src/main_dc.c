@@ -55,6 +55,7 @@ int main(int argc, char **argv) {
 #ifdef HAL_FAST_SERIAL
     bench("MMU off");
 #endif
+    hal_audio_init(); /* before the MMU is on: the AICA driver is loaded through the store queues */
     if (hal_mem_init() < 0) {
         hal_log("klonoa-dc: fatal: memory mapping failed\n");
         return 1;

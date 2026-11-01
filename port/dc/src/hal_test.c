@@ -109,5 +109,19 @@ void hal_prof_frame_end(void) {
                 (unsigned long)(hal_prof.render_us / f), (unsigned long)(hal_prof.submit_us / f),
                 (unsigned long)(hal_prof.tex_us / f), (unsigned long)(hal_prof.wait_us / f));
         memset(&hal_prof, 0, sizeof hal_prof);
+#if HAL_AUDIO
+        {
+            struct hal_audio_stats *a = &hal_audio_stats;
+            hal_log("AUDIO frames=%lu m4a=%luus hw=%luus poll=%luus maxgap=%luus fill=%d..%d trim=%d..%d "
+                    "underruns=%lu (audible %lu, %lu samples, last frame %lu) overflows=%lu psg_triggers=%lu\n",
+                    (unsigned long)hal_frame_count, (unsigned long)(a->m4a_us / f), (unsigned long)(a->hw_us / f),
+                    (unsigned long)(a->poll_us / f), (unsigned long)a->max_poll_gap_us, a->fill_min, a->fill_max,
+                    a->trim_min, a->trim_max, (unsigned long)a->underruns, (unsigned long)a->underruns_audible,
+                    (unsigned long)a->underrun_samples,
+                    (unsigned long)a->last_underrun_frame, (unsigned long)a->overflows,
+                    (unsigned long)a->psg_triggers);
+            hal_audio_stats_reset();
+        }
+#endif
     }
 }

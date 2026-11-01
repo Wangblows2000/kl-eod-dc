@@ -87,6 +87,7 @@ static void enter_line(int line) {
         hal_video_present();
         hal_dma_vblank();
         if (irq_enabled(IE_VBLANK, DISPSTAT_VBLANK_INTR)) raise_irq(IE_VBLANK, gIntrTable.vBlank);
+        hal_audio_frame(); /* play this frame's DMA segment and PSG state */
     }
 }
 

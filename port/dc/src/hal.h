@@ -87,6 +87,17 @@ int hal_test_dump_due(u32 frame);
 u32 hal_test_end_frame(void);
 void hal_test_dump(const char *tag, u32 frame, const u16 *pix);
 
+/* hal_audio.c: GBA sound hardware model and AICA output; hal_m4a.c: the MP2K engine's asm parts */
+struct hal_audio_stats {
+    u32 frames, samples, hw_us, m4a_us, poll_us, max_poll_gap_us; /* per 120-frame window */
+    int fill_min, fill_max, trim_min, trim_max;
+    u32 underruns, underruns_audible, underrun_samples, last_underrun_frame, overflows, psg_triggers; /* totals */
+};
+extern struct hal_audio_stats hal_audio_stats;
+int hal_audio_init(void);   /* before hal_mem_init: loads the AICA driver */
+void hal_audio_frame(void); /* once per frame, after the VBlank handler */
+void hal_audio_stats_reset(void);
+
 /* hal_input.c */
 void hal_input_poll(void); /* writes REG_KEYINPUT */
 int hal_input_quit_requested(void);

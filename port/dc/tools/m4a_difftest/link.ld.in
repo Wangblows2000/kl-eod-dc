@@ -1,0 +1,7 @@
+ENTRY(SoundMain)
+SECTIONS {
+    . = 0x09000000;
+    .text : { *(.text*) *(.rodata*) }
+    .data : { *(.data*) }
+    .bss : { *(.bss*) *(COMMON) }
+}

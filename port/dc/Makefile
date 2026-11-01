@@ -40,8 +40,11 @@ HAL_OBJS  := $(patsubst src/%.c,$(BUILD)/hal/%.o,$(HAL_SRCS)) $(BUILD)/hal/rom_b
 #   RENDERER=sw|pvr   default renderer (hold Y at boot for the other)
 #   SCRIPT=tests/x.txt  input/dump script for automated runs
 #   MAX_FRAMES=N  AUTOPLAY=K  FREEZE=1  test controls (see README)
+#   AUDIO=0           silent build (no MP2K engine, no AICA output); AUDIOTEST=1 adds a 440 Hz tone
 RENDERER ?= pvr
-OPTIONS := RENDERER=$(RENDERER) PVRDBG=$(PVRDBG) SCRIPT=$(SCRIPT) MAX_FRAMES=$(MAX_FRAMES) AUTOPLAY=$(AUTOPLAY) FREEZE=$(FREEZE)
+AUDIO ?= 1
+OPTIONS := RENDERER=$(RENDERER) PVRDBG=$(PVRDBG) SCRIPT=$(SCRIPT) MAX_FRAMES=$(MAX_FRAMES) AUTOPLAY=$(AUTOPLAY) FREEZE=$(FREEZE) \
+           AUDIO=$(AUDIO) AUDIOTEST=$(AUDIOTEST)
 
 INC     := $(BUILD)/include
 GAME_CPPFLAGS := -nostdinc -I $(ROOT)/tools/agbcc/include -iquote $(INC) -DREVISION=0 -DENGLISH -DPLATFORM_DREAMCAST
@@ -88,6 +91,8 @@ $(BUILD)/options.h: FORCE
 	@mkdir -p $(dir $@)
 	@{ echo '/* $(OPTIONS) */'; \
 	   echo '#define HAL_DEFAULT_RENDERER $(if $(filter sw,$(RENDERER)),0,1)'; \
+	   echo '#define HAL_AUDIO $(if $(filter 0,$(AUDIO)),0,1)'; \
+	   $(if $(AUDIOTEST),echo '#define HAL_AUDIO_TONE 1';) \
 	   $(if $(MAX_FRAMES),echo '#define HAL_MAX_FRAMES $(MAX_FRAMES)';) \
 	   $(if $(AUTOPLAY),echo '#define HAL_AUTOPLAY $(AUTOPLAY)';) \
 	   $(if $(FREEZE),echo '#define HAL_FREEZE 1';) \
@@ -136,3 +141,12 @@ census:
 
 clean:
 	rm -rf $(BUILD)
+
+# ---- host-side audio tests (no Dreamcast needed) -------------------------------------------
+# test-audio: the GBA sound model against GBATEK's numbers (tools/gbasnd_test.c).
+# The MP2K engine port is checked against the ROM's own code by tools/m4a_difftest/difftest.py.
+.PHONY: test-audio
+test-audio:
+	@mkdir -p $(BUILD)
+	cc -O2 -Wall -I src -DGBASND_TEST src/hal_gbasnd.c tools/gbasnd_test.c -lm -o $(BUILD)/gbasnd_test
+	$(BUILD)/gbasnd_test
