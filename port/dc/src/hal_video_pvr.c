@@ -173,10 +173,13 @@ static u32 block8_offset(u32 tx, u32 ty, u32 w, u32 h) {
     return ((spread(ty & mask) | spread(tx & mask) << 1) + ((tx >> sh) + (ty >> sh)) * m * m) * 64;
 }
 
-/* Texture uploads use plain 32-bit stores to (uncached) texture memory, not the store queues:
- * with the MMU on, the store queues are translated through a TLB entry that KallistiOS remaps on
- * every sq_lock, and frequent small sq_cpy() calls between scenes froze PowerVR rendering
- * (first seen in the story cutscene, which streams sprite tiles every frame). */
+/* Texture uploads use plain 32-bit stores to (uncached) texture memory, not the store queues --
+ * every upload, including pvr_txr_load's: with the MMU on, the store queues are translated
+ * through a TLB entry that KallistiOS remaps on every sq_lock, and frequent small sq_cpy() calls
+ * between scenes froze PowerVR rendering (first seen in the story cutscene, which streams sprite
+ * tiles every frame). The status line's texture, uploaded with pvr_txr_load when its text
+ * changed, sent blocks of its pixels to the TA instead of texture memory now and then (flycast:
+ * "Unhandled param type pcw ce59ce59", 0xCE59 being the text colour, after VMU saves). */
 static void upload(pvr_ptr_t dst, const u8 *src, u32 bytes) {
     volatile u32 *d = (volatile u32 *)dst;
     const u32 *s32 = (const u32 *)src;
@@ -1026,7 +1029,7 @@ static void sync_status_text(void) {
     memset(buf, 0, sizeof buf);
     minifont_set_color(200, 200, 200);
     if (text_len) minifont_draw_str(buf, TEXT_TEX_W, text_shown);
-    pvr_txr_load(buf, text_tex, sizeof buf);
+    upload(text_tex, (const u8 *)buf, sizeof buf); /* not pvr_txr_load: see upload() */
 }
 
 /* A textured quad in screen coordinates (the presentation scene), opaque list. */
@@ -1089,7 +1092,7 @@ static void draw_probe(void) {
             for (x = 0; x < 256; x++)
                 card[y * 256 + x] = (u16)(((x & 1) ? 31 << 11 : 0) | ((y & 1) ? 63 << 5 : 0) | 16);
         probe_tex = pvr_mem_malloc(sizeof card);
-        pvr_txr_load(card, probe_tex, sizeof card);
+        upload(probe_tex, (const u8 *)card, sizeof card);
         ready = 1;
     }
     pvr_poly_cxt_txr(&cxt, PVR_LIST_OP_POLY, PVR_TXRFMT_RGB565 | PVR_TXRFMT_NONTWIDDLED, 256, 256, probe_tex,
@@ -1125,7 +1128,7 @@ void hal_pvr_init(void) {
     game_tex = pvr_mem_malloc(256 * 256 * 2); /* 240x160 used, pitch 256; sampled as 256x256 */
     {
         static u16 black[256 * 16] __attribute__((aligned(32)));
-        for (i = 0; i < 16; i++) pvr_txr_load(black, (u8 *)game_tex + i * sizeof black, sizeof black);
+        for (i = 0; i < 16; i++) upload((u8 *)game_tex + i * sizeof black, (const u8 *)black, sizeof black);
     } /* the first frame presents it before anything has been rendered into it */
     obj4 = pvr_mem_malloc(256 * 256 / 2);
     obj8 = pvr_mem_malloc(256 * 256);
