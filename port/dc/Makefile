@@ -39,7 +39,8 @@ HAL_OBJS  := $(patsubst src/%.c,$(BUILD)/hal/%.o,$(HAL_SRCS)) $(BUILD)/hal/rom_b
 # Build options (they are baked into $(BUILD)/options.h; changing one rebuilds the HAL):
 #   RENDERER=sw|pvr   default renderer (hold Y at boot for the other)
 #   SCRIPT=tests/x.txt  input/dump script for automated runs
-#   MAX_FRAMES=N  AUTOPLAY=K  FREEZE=1  test controls (see README)
+#   MAX_FRAMES=N      stop after N frames;  AUTOPLAY=K  tap START every K frames;
+#   FREEZE=1          hold the last frame instead of exiting
 #   AUDIO=0           silent build (no MP2K engine, no AICA output); AUDIOTEST=1 adds a 440 Hz tone;
 #                     AUDIOCHECK=1 counts gaps in the produced sound (compare with tools/audiocheck.py);
 #                     AUDIODUMP=from-to records each stage's audio for those frames (tools/audiotrace.py;
