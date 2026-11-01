@@ -347,7 +347,14 @@ static void sync_affine_bg(int n, u16 cnt) {
  * block's top-left screen position, fetched from the VRAM mirror with the registers of the block's
  * first line (so HBlank and affine state are honoured). One quad then magnifies it by the block
  * size with nearest filtering, which is exactly the GBA's mosaic. */
-#define MOS 128 /* >= 240/2 x 160/2 blocks */
+/* The texture holds one texel per block, so it must hold ceil(240 / bw) x ceil(160 / bh) of them.
+ * Only one of the two sizes need be above 1 for a BG to be mosaicked: MOSAIC = 0x1110 (blocks one
+ * pixel wide, two tall), which the game writes during its room transitions in Vision 1-4, needs
+ * 240 x 80 texels, and 2 x 1 blocks need 120 x 160. The texture was 128 x 128, sized for blocks of
+ * at least 2 x 2, and those mosaics wrote past the end of mosbuf: into the BG texture records
+ * after it, whose texture pointers then became garbage. That broke every BG drawn afterwards,
+ * for the rest of the session, and could send texture uploads to unmapped addresses. */
+#define MOS 256 /* >= 240 x 160 blocks: any block size */
 static pvr_ptr_t mostex[4];
 static u8 mosbuf[MOS * MOS] __attribute__((aligned(32)));
 static int mos_active[4], mos_bw, mos_bh;
@@ -409,7 +416,7 @@ static u32 mosaic_key(int n) {
 
 static void build_mosaic(int n) {
     static u32 built_key[4];
-    int bx, by, i;
+    int bx, by, i, span;
     u32 key;
     if (!mostex[n]) mostex[n] = pvr_mem_malloc(MOS * MOS);
     if (!mostex[n]) return;
@@ -417,7 +424,10 @@ static void build_mosaic(int n) {
     if (key == built_key[n]) return;
     built_key[n] = key;
 
-    memset(mosbuf, 0, sizeof mosbuf);
+    /* Blocks with x, y < span lie in the first span * span bytes of the twiddled (Morton-order)
+     * texture: clear and upload only those. */
+    for (span = 8; span * mos_bw < W || span * mos_bh < H; span <<= 1) {}
+    memset(mosbuf, 0, span * span);
     for (by = 0; by * mos_bh < H; by++) {
         const struct lstate *s = &lines[by * mos_bh];
         u32 row = spread(by);
@@ -448,7 +458,7 @@ static void build_mosaic(int n) {
             for (bx = 0; bx * mos_bw < W; bx++) mosbuf[row | spread(bx) << 1] = bg_pixel(s, n, bx * mos_bw, by * mos_bh, 0);
         }
     }
-    for (i = 0; i < MOS * MOS; i += 64) upload64((u8 *)mostex[n] + i, mosbuf + i);
+    for (i = 0; i < span * span; i += 64) upload64((u8 *)mostex[n] + i, mosbuf + i);
 }
 
 static void plan_mosaic(void) {
