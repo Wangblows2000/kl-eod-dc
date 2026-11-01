@@ -6,6 +6,12 @@ framebuffer emulation on). Nothing here has been run on real Dreamcast hardware.
 > **Later:** the "no sound" statements below describe the port at this report. Sound has since
 > landed; see [report 3](audio.md). The visual regression of §7 still passes with sound on, with
 > dumps bit-identical to the silent build's.
+>
+> **Later still:** the ×2 output described in §1 ("Output") has been replaced. The game is now
+> drawn 1:1 into a 240×160 render-to-texture target, and that texture is shown at scale 8/3
+> (640×426, centred, black bars of 27 rows): the largest uniform 3:2 fit in 4:3 640×480. That
+> costs one frame of display latency and some frame rate in heavy boot scenes; see
+> [report 5](vmu-saves-display.md) §2.
 
 ## Summary
 

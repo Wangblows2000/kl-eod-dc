@@ -212,10 +212,19 @@ sequence. Those images are made from the game's sprites, so they are not in this
 - Which way up the picture appears on real hardware rests on KallistiOS's `vmufb_present()`
   convention (rotate 180° unless the controller and VMU face opposite ways), which the port copies;
   flycast reports both VMUs as rotated and does not show which way up is right.
-- Interleaving with VMU saves: the LCD path never touches storage and only try-locks, so it cannot
-  stall a save or the game; a save's block write may wait up to one maple cycle (~16 ms) if an LCD
-  write to that VMU is in flight. Saves were not exercised together with the LCD here (the save
-  feature is being added separately).
+- Interleaving with VMU saves, before they were merged: the LCD path never touches storage and only
+  try-locks, so it cannot stall a save or the game. A save's block write may wait up to one maple
+  cycle (~16 ms) if an LCD write to that VMU is in flight. Saves were not exercised together with
+  the LCD at this point (the save feature was being added separately).
+
+**Later, with saves merged** ([report 5](vmu-saves-display.md)). On this route the game saves three
+times to VMU A1, at frames 1225, 1320 and 1475, each taking about 1–1.5 s.
+- While a save writes, the LCD's sends to that VMU find its maple frame locked and get
+  `MAPLE_EAGAIN`. Pictures the game replaces meanwhile are never sent; the newest one goes as soon
+  as the save releases the VMU. VMU A2 is unaffected.
+- `tools/vmulcd.py` had counted busy as −1 (`MAPLE_EFAIL`) rather than −2 (`MAPLE_EAGAIN`), so it
+  reported those pictures as lost. It now counts them separately ("replaced while a VMU was busy").
+- Every save on the route was written and verified.
 
 ## 7. Files and commands
 

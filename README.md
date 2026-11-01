@@ -11,6 +11,10 @@ built from it stays on your machine.
 - Runs the original game logic, at 59.8 fps in gameplay.
 - PowerVR renderer by default; the software renderer is a fallback (hold **Y** at boot).
 - Music, sound effects and PSG voices through the AICA; `AUDIO=0` builds a silent port.
+- Saves to the VMU (3 blocks per copy, two copies; each write is read back and verified before it
+  replaces the previous save). A line in the bottom bar reports saved, failed, full or no VMU.
+- The 3:2 picture is shown at the largest uniform size in the 4:3 640×480 output: 640×426,
+  centred, with black bars above and below.
 - Klonoa on the VMU screens in gameplay, a walking Moo on menus, from the game's own sprites.
 - **Tested in the Flycast emulator only, never on a real Dreamcast.**
 
@@ -55,9 +59,9 @@ source /path/to/kos/environ.sh
 make -C port/dc                                  # -> port/dc/build/klonoa-dc.elf
 ```
 
-Common options: `RENDERER=sw|pvr`, `AUDIO=0`, `SCRIPT=tests/<name>.txt`, `MAX_FRAMES=N`,
-`FREEZE=1`. Test-only options (`AUDIOTEST`, `AUDIOCHECK`, `AUDIOPROBE`, `AUDIODUMP`, `AUTOPLAY`)
-are described at the top of `port/dc/Makefile`.
+Common options: `RENDERER=sw|pvr`, `AUDIO=0`, `VMULCD=0`, `SCRIPT=tests/<name>.txt`,
+`MAX_FRAMES=N`, `FREEZE=1`. Test-only options (`AUDIOTEST`, `AUDIOCHECK`, `AUDIOPROBE`,
+`AUDIODUMP`, `STALL`, `GEOMPROBE`, `AUTOPLAY`) are described at the top of `port/dc/Makefile`.
 
 ## Tests
 
@@ -66,6 +70,10 @@ are described at the top of `port/dc/Makefile`.
   `port/dc/tools/flycast-test-hooks.patch`).
 - `make -C port/dc test-audio` and `port/dc/tools/m4a_difftest/difftest.py` — the sound model
   and the sound engine against the original ROM code, on the host.
+- `make -C port/dc test-save` and `port/dc/tools/save_regress.sh` — VMU saves against a mock VMU
+  on the host, and through the game's own menus in flycast (new game, restart, damaged copy, no
+  VMU, full VMU).
+- `GEOMPROBE=N` builds and `port/dc/tools/geomcheck.py` — the output geometry, pixel by pixel.
 - `make -C port/dc test-vmu-lcd` and `port/dc/tools/vmulcd.py` — the VMU screen character, on the
   host and in flycast.
 
@@ -77,3 +85,4 @@ The reports have the exact commands and results.
 - [Report 2](docs/powervr-renderer.md) — the PowerVR renderer.
 - [Report 3](docs/audio.md) — sound; §8 covers the fix for the muffled, crunchy output.
 - [Report 4](docs/vmu-lcd.md) — Klonoa and the Moo on the VMU screen.
+- [Report 5](docs/vmu-saves-display.md) — VMU saves and the 3:2 picture in 4:3.

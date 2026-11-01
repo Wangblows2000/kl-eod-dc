@@ -471,3 +471,42 @@ not traced further. What is **not** verified: real hardware (the fix
 relies on the SH-4 manual's XTRCT semantics, which flycast follows); a comparison with a real GBA
 or with mGBA's output (the hardware model's accuracy is as in §4); and listening — no one has
 listened to the captures in this session, the checks above are numerical.
+
+## 9. Fix: lag frames at the start of a song (2026-11-01)
+
+**Symptom.** After the VMU saves and the 3:2 display were merged, the sound regression failed on
+the Namco jingle. Only 3 of 100 engine segments matched the cartridge's engine in order, and the
+first difference was the song's third frame. Nothing was audibly wrong for more than a frame:
+the song had started one segment early, with one silent segment three frames in.
+
+**Cause.** The rule from §8, "after the game has already mixed this frame", was too narrow:
+
+- The jingle starts with `m4aSoundVSyncOn` part-way through a frame. Earlier in that frame, the
+  engine's lock had turned the game's `SoundMain` away, because sound was still off.
+- A long frame then ran three poll-thread lag frames. Why a long frame fell exactly there in that
+  run was not traced; the boot's timing had moved, since it now reads the VMUs first. The lag
+  frames saw no game mix this frame, so they mixed *before* each VSync, standing in for a call
+  the game had already made.
+- The game's next VBlank therefore had no mix behind it, and played an unmixed segment.
+- The cartridge instead plays its one unmixed segment first, right after `VSyncOn`, with the mixes
+  following one VSync behind.
+
+The check "one `SoundMain` behind every VSync" did not catch it, because it only looked at audible
+segments and this stale one was silent.
+
+**The fix.**
+- `SoundMain` calls the lock refuses are now counted too (`hal_m4a_main_entries`).
+- A lag frame mixes after its VSync whenever the game's call for the frame has been *made*, whether
+  or not it mixed.
+- The baseline is taken just before the VBlank handler runs (`hal_audio_vblank_begin`).
+
+**Tests.**
+- `STALL=a,b` test builds make those frames 50 ms longer.
+- `audio_regress.sh` now runs the boot a second time with `STALL=82,130`, which puts lag frames
+  right after `VSyncOn` and in the middle of the jingle.
+  - With the old logic: 5/100 segments, plus an exception at frame 82.
+  - With the fix: 100/100, and the stream check passes.
+- The engine check now counts a VSync with no mix as an exception whenever sound was already on,
+  silent or not. Only the first VSync after `VSyncOn` is exempt, as on the cartridge.
+- The stream check now searches the capture's whole start-up silence for its first window,
+  because that silence grows with anything the boot does before the first frame.
