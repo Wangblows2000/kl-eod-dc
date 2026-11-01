@@ -56,6 +56,27 @@ void hal_report_memory(void);
  *   HAL_RENDER_PVR -- PowerVR renderer (hal_video_pvr.c)
  * Selected at boot (build default HAL_DEFAULT_RENDERER, or hold Y while booting for the other one). */
 enum { HAL_RENDER_SW = 0, HAL_RENDER_PVR = 1 };
+
+/* Presentation, shared by both renderers. The output is 640x480 (vid_set_mode(DM_640x480)),
+ * shown as 4:3, so its pixels are square. The 240x160 (3:2) GBA picture is scaled uniformly by
+ * the largest factor that fits -- min(640/240, 480/160) = 8/3 -- and centred: 640 x 426.7 at
+ * (0, 26.7), with black bars above and below. A 3:2 picture is wider than 4:3, so the bars are
+ * horizontal; screen rows 27..452 show the game. Each screen pixel shows the game pixel under its
+ * centre (nearest), so game pixels are 3, 3, 2, 3, 3, 2 ... screen pixels wide and tall. The game's
+ * own coordinates are untouched: only these constants place its picture on the screen. */
+#define HAL_FB_W 640
+#define HAL_FB_H 480
+#define HAL_GBA_W 240
+#define HAL_GBA_H 160
+#define HAL_VIEW_SCALE (8.0f / 3.0f)
+#define HAL_VIEW_X0 0.0f
+#define HAL_VIEW_Y0 (80.0f / 3.0f)
+#define HAL_VIEW_ROW0 27   /* first screen row inside the picture */
+#define HAL_VIEW_ROWS 426  /* rows 27..452 */
+#define HAL_TEXT_Y 458     /* status line (VMU messages): 16 rows inside the bottom bar */
+#define HAL_TEXT_ROWS 16
+/* Test aid: non-black pixels in the bars of a 640x480 RGB565 frame, outside the status line. */
+u32 hal_video_bar_pixels(const volatile u16 *fb, u32 *top, u32 *bottom);
 extern int hal_renderer;
 void hal_video_init(void);
 void hal_video_line(int line); /* called for each visible line, before its HBlank */
@@ -72,6 +93,7 @@ void hal_pvr_init(void);
 void hal_pvr_line(int line);
 void hal_pvr_present(void);
 void hal_pvr_readback(u16 *dst); /* 240x160 BGR555 of the last presented frame */
+const volatile u16 *hal_pvr_front_buffer(void); /* the last presented 640x480 frame (test dumps) */
 void hal_pvr_report_features(void);
 
 /* hal_test.c */

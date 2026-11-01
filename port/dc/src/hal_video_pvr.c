@@ -30,6 +30,7 @@
  * blending (A*EVA + B*EVB) is approximated as A*a + B*(1-a) with a = EVA/16, exact whenever
  * EVA + EVB = 16.
  */
+#include <dc/minifont.h>
 #include <dc/pvr.h>
 #include <dc/sq.h>
 #include <kos.h>
@@ -40,9 +41,15 @@
 
 #define W 240
 #define H 160
-#define SCALE 2.0f
-#define OX 80.0f
-#define OY 80.0f
+/* The game's picture is rendered 1:1 (240x160) into a texture, game_tex; a second scene then
+ * draws that texture over the screen with the presentation geometry of hal.h (8/3, nearest), plus
+ * the status line. Rendering at the GBA's own resolution keeps every game pixel one colour, as on
+ * the GBA: with the scaling done by the polygons instead, an affine (rotated or zoomed) layer
+ * would be sampled several times inside one game pixel and show detail the GBA does not have. */
+#define SCALE 1.0f
+#define OX 0.0f
+#define OY 0.0f
+#define SAMPLE_OFS 0.5f /* where a screen pixel samples within its game pixel (its centre) */
 
 #define PLTT16 ((volatile u16 *)GBA_PLTT)
 #define VRAM8 ((volatile u8 *)GBA_VRAM)
@@ -783,10 +790,10 @@ static void draw_bg_run(const struct lstate *s, int n, int y0, int y1, int pass)
             float rx = s->refx[a] / 256.0f, ry = s->refy[a] / 256.0f, isz = 1.0f / b->w;
             struct vtx q[4];
             for (k = 0; k < 4; k++) {
-                /* The GBA samples texel ref + PA*x at integer pixel x; the 2x output samples a quarter
-                 * GBA pixel further on, so evaluate the mapping a quarter pixel back. */
+                /* The GBA samples texel ref + PA*x at integer pixel x; the render samples at the
+                 * pixel's centre, so evaluate the mapping half a pixel back. */
                 float x = (k == 1 || k == 2) ? c.x1 : c.x0, y = (k >= 2) ? c.y1 : c.y0;
-                float sx = x - 0.25f, sy = y - 0.25f - y0;
+                float sx = x - SAMPLE_OFS, sy = y - SAMPLE_OFS - y0;
                 q[k].x = x;
                 q[k].y = y;
                 /* + 1/512 texel: GBA coordinates are multiples of 1/256, so half a step keeps the
@@ -900,8 +907,8 @@ static void draw_sprites_seg(const struct lstate *s, const struct clip *c, int p
                         float du = (k == 1 || k == 2) ? 8.0f : 0.0f, dv = (k >= 2) ? 8.0f : 0.0f;
                         float lx = tx * 8 + du - w / 2.0f, ly = ty * 8 + dv - h / 2.0f;
                         /* texture = M * (screen - centre) + half size  =>  screen = M^-1 * (...) + centre */
-                        q[k].x = cx + (pd * lx - pb * ly) / det + 0.25f; /* see the affine BG note */
-                        q[k].y = cy + (-pc * lx + pa * ly) / det + 0.25f;
+                        q[k].x = cx + (pd * lx - pb * ly) / det + SAMPLE_OFS; /* see the affine BG note */
+                        q[k].y = cy + (-pc * lx + pa * ly) / det + SAMPLE_OFS;
                         q[k].u = u0 + (du + 1.0f / 512) / 256;
                         q[k].v = v0 + (dv + 1.0f / 512) / 256;
                     }
@@ -997,6 +1004,107 @@ static void draw_opaque(void) {
     }
 }
 
+static void present_texture(void);
+
+/* ---- status line in the bottom bar (VMU messages, hal_save.c) ------------------------------- */
+
+#define TEXT_TEX_W 512
+static pvr_ptr_t text_tex, game_tex;
+static char text_shown[64];
+static int text_len;
+
+/* Called where textures are synced (the previous frame's lists are done with them). */
+static void sync_status_text(void) {
+    const char *m = hal_save_message();
+    static u16 buf[TEXT_TEX_W * HAL_TEXT_ROWS] __attribute__((aligned(32)));
+    if (!m) m = "";
+    if (!strcmp(m, text_shown)) return;
+    strncpy(text_shown, m, sizeof text_shown - 1);
+    text_len = (int)strlen(text_shown);
+    if (text_len > TEXT_TEX_W / 8) text_len = TEXT_TEX_W / 8;
+    text_shown[text_len] = 0;
+    memset(buf, 0, sizeof buf);
+    minifont_set_color(200, 200, 200);
+    if (text_len) minifont_draw_str(buf, TEXT_TEX_W, text_shown);
+    pvr_txr_load(buf, text_tex, sizeof buf);
+}
+
+/* A textured quad in screen coordinates (the presentation scene), opaque list. */
+static void screen_quad(pvr_ptr_t tex, int tw, int th, float x0, float y0, float x1, float y1, float u1, float v1) {
+    pvr_poly_cxt_t cxt;
+    pvr_poly_hdr_t *hdr;
+    struct { float x, y, u, v; } q[4] = {{x0, y0, 0, 0}, {x1, y0, u1, 0}, {x0, y1, 0, v1}, {x1, y1, u1, v1}};
+    int i;
+    pvr_poly_cxt_txr(&cxt, PVR_LIST_OP_POLY, PVR_TXRFMT_RGB565 | PVR_TXRFMT_NONTWIDDLED, tw, th, tex,
+                     PVR_FILTER_NONE);
+    cxt.gen.culling = PVR_CULLING_NONE;
+    hdr = pvr_dr_target();
+    pvr_poly_compile(hdr, &cxt);
+    pvr_dr_commit(hdr);
+    for (i = 0; i < 4; i++) {
+        pvr_vertex_t *vx = pvr_dr_target();
+        vx->flags = i == 3 ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
+        vx->x = q[i].x;
+        vx->y = q[i].y;
+        vx->z = 1.0f;
+        vx->u = q[i].u;
+        vx->v = q[i].v;
+        vx->argb = 0xFFFFFFFF;
+        vx->oargb = 0;
+        pvr_dr_commit(vx);
+    }
+}
+
+static void draw_status_text(void) {
+    float w = (float)(text_len * 8), x0 = (HAL_FB_W - w) / 2;
+    if (text_len)
+        screen_quad(text_tex, TEXT_TEX_W, HAL_TEXT_ROWS, x0, HAL_TEXT_Y, x0 + w, HAL_TEXT_Y + HAL_TEXT_ROWS,
+                    w / TEXT_TEX_W, 1.0f);
+}
+
+/* The presentation scene: game_tex over the screen with the geometry of hal.h, and the status line. */
+static void present_texture(void) {
+    pvr_scene_begin();
+    pvr_list_begin(PVR_LIST_OP_POLY);
+    screen_quad(game_tex, 256, 256, HAL_VIEW_X0, HAL_VIEW_Y0, HAL_VIEW_X0 + W * HAL_VIEW_SCALE,
+                HAL_VIEW_Y0 + H * HAL_VIEW_SCALE, W / 256.0f, H / 256.0f);
+    draw_status_text();
+    pvr_list_finish();
+    pvr_scene_finish();
+}
+
+#ifdef HAL_GEOM_PROBE
+/* GEOMPROBE=1 test builds: in place of the game's picture, a 240x160 test card through the same
+ * vertex mapping (emit_rect -> put_vertex): red = x odd, green = y odd, blue = 16 everywhere, so
+ * every game pixel is non-black and its column and row can be told apart (tools/geomcheck.py). */
+static pvr_ptr_t probe_tex;
+static void draw_probe(void) {
+    static int ready;
+    pvr_poly_cxt_t cxt;
+    pvr_poly_hdr_t *hdr;
+    if (!ready) {
+        static u16 card[256 * 256] __attribute__((aligned(32)));
+        int x, y;
+        for (y = 0; y < 256; y++)
+            for (x = 0; x < 256; x++)
+                card[y * 256 + x] = (u16)(((x & 1) ? 31 << 11 : 0) | ((y & 1) ? 63 << 5 : 0) | 16);
+        probe_tex = pvr_mem_malloc(sizeof card);
+        pvr_txr_load(card, probe_tex, sizeof card);
+        ready = 1;
+    }
+    pvr_poly_cxt_txr(&cxt, PVR_LIST_OP_POLY, PVR_TXRFMT_RGB565 | PVR_TXRFMT_NONTWIDDLED, 256, 256, probe_tex,
+                     PVR_FILTER_NONE);
+    cxt.gen.culling = PVR_CULLING_NONE;
+    cxt.depth.comparison = PVR_DEPTHCMP_GEQUAL;
+    hdr = pvr_dr_target();
+    pvr_poly_compile(hdr, &cxt);
+    pvr_dr_commit(hdr);
+    cur_argb = 0xFFFFFFFF;
+    emit_rect(0, 0, W, H, 0, 0, W / 256.0f, H / 256.0f, 50.0f);
+    cur_key = 0xFFFFFFFF;
+}
+#endif
+
 void hal_pvr_init(void) {
     pvr_init_params_t params = {
         {PVR_BINSIZE_16, PVR_BINSIZE_0, PVR_BINSIZE_16, PVR_BINSIZE_0, PVR_BINSIZE_16},
@@ -1013,6 +1121,12 @@ void hal_pvr_init(void) {
     vid_set_dithering(false);
     pvr_set_bg_color(0, 0, 0);
     pvr_set_pal_format(PVR_PAL_ARGB1555);
+    text_tex = pvr_mem_malloc(TEXT_TEX_W * HAL_TEXT_ROWS * 2);
+    game_tex = pvr_mem_malloc(256 * 256 * 2); /* 240x160 used, pitch 256; sampled as 256x256 */
+    {
+        static u16 black[256 * 16] __attribute__((aligned(32)));
+        for (i = 0; i < 16; i++) pvr_txr_load(black, (u8 *)game_tex + i * sizeof black, sizeof black);
+    } /* the first frame presents it before anything has been rendered into it */
     obj4 = pvr_mem_malloc(256 * 256 / 2);
     obj8 = pvr_mem_malloc(256 * 256);
     init_spread();
@@ -1071,6 +1185,7 @@ void hal_pvr_present(void) {
     plan_fade();
     if (fade_mode) USE(F_FADE_PAL);
     if (!((HAL_PVR_DEBUG & 16) && hal_frame_count > 1300)) sync_palette();
+    sync_status_text();
     t2 = hal_now_us();
     hal_prof.tex_us += (u32)(t2 - t1);
     if (t2 - t1 > 15000)
@@ -1082,22 +1197,47 @@ void hal_pvr_present(void) {
     {
         static u32 ph[5], phn;
         u64 a = hal_now_us(), b2, c, d, e;
-        pvr_scene_begin();
+        /* Presentation first: the picture rendered into game_tex last frame, over the screen at
+         * 8/3, plus the status line. Doing it before this frame's render keeps the one wait for
+         * the display (vertical blank) at the start of the frame, as with a single scene; done
+         * after, its wait fell in the middle of the frame and cost up to 8 fps in heavy scenes.
+         * The price is one frame between the game drawing a picture and the screen showing it. */
+        present_texture();
+        pvr_scene_begin_rtt(game_tex, W, H, 256);
         pvr_list_begin(PVR_LIST_OP_POLY);
         draw_opaque();
+#ifdef HAL_GEOM_PROBE
+        draw_probe();
+#endif
         pvr_list_finish();
         b2 = hal_now_us();
         pvr_list_begin(PVR_LIST_PT_POLY);
+#ifndef HAL_GEOM_PROBE
         if (!((HAL_PVR_DEBUG & 32) && hal_frame_count > 1300)) draw_scene(0);
         else keepalive_poly();
+#else
+        cur_list = PVR_LIST_PT_POLY;
+        cur_key = 0xFFFFFFFF;
+        keepalive_poly();
+#endif
         pvr_list_finish();
         c = hal_now_us();
         pvr_list_begin(PVR_LIST_TR_POLY);
+#ifndef HAL_GEOM_PROBE
         if (!(HAL_PVR_DEBUG & 1) && !((HAL_PVR_DEBUG & 32) && hal_frame_count > 1300)) draw_scene(1);
         else keepalive_poly();
+#else
+        cur_list = PVR_LIST_TR_POLY;
+        cur_key = 0xFFFFFFFF;
+        keepalive_poly();
+#endif
         pvr_list_finish();
         d = hal_now_us();
         pvr_scene_finish();
+        /* Test runs: a frame that is dumped is also shown at once (a second presentation), so the
+         * screen read back for the comparison is this frame, not the previous one. */
+        if (hal_test_dump_due(hal_frame_count + 1)) present_texture();
+
         e = hal_now_us();
         ph[0] += (u32)(b2 - a);
         ph[1] += (u32)(c - b2);
@@ -1171,28 +1311,23 @@ void hal_pvr_report_features(void) {
     for (f = 0; f < F_COUNT; f++) hal_log("FEATURE %s: %lu\n", feature_name[f], (unsigned long)feature_frames[f]);
 }
 
-void hal_pvr_readback(u16 *dst) {
-    const volatile u16 *fb;
-    u32 front, frame;
-    int x, y;
+const volatile u16 *hal_pvr_front_buffer(void) {
+    u32 front;
     pvr_wait_render_done();
     front = (u32)pvr_get_front_buffer();
-    frame = (front - PVR_RAM_BASE) / 2;
-    fb = (const volatile u16 *)(PVR_RAM_BASE + frame);
-    {
-        static int logged;
-        if (!logged++) {
-            u32 sums[3] = {0, 0, 0}, cand[3] = {PVR_RAM_BASE + frame, front, PVR_RAM_INT_BASE + frame * 2};
-            int k;
-            for (k = 0; k < 3; k++)
-                for (x = 0; x < 640 * 16; x++) sums[k] += ((const volatile u16 *)cand[k])[240 * 640 + x];
-            hal_log("pvr readback: front=%08lx cand32=%08lx sum=%lu front sum=%lu int sum=%lu\n", (unsigned long)front,
-                    (unsigned long)cand[0], (unsigned long)sums[0], (unsigned long)sums[1], (unsigned long)sums[2]);
-        }
-    }
-    for (y = 0; y < H; y++)
+    return (const volatile u16 *)(PVR_RAM_BASE + (front - PVR_RAM_BASE) / 2);
+}
+
+/* 240x160 BGR555 of the frame just presented (dump frames are presented at once, see above): the
+ * screen pixel at the centre of each game pixel. */
+void hal_pvr_readback(u16 *dst) {
+    const volatile u16 *fb = hal_pvr_front_buffer();
+    int x, y;
+    for (y = 0; y < H; y++) {
+        int py = (int)(HAL_VIEW_Y0 + ((float)y + 0.5f) * HAL_VIEW_SCALE);
         for (x = 0; x < W; x++) {
-            u16 p = fb[(80 + y * 2) * 640 + 80 + x * 2];
+            u16 p = fb[py * HAL_FB_W + (int)(HAL_VIEW_X0 + ((float)x + 0.5f) * HAL_VIEW_SCALE)];
             dst[y * W + x] = (u16)(((p >> 11) & 31) | (((p >> 6) & 31) << 5) | ((p & 31) << 10));
         }
+    }
 }

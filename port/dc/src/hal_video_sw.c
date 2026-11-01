@@ -7,12 +7,13 @@
  * 4/8bpp, semi-transparent, OBJ window), priorities, WIN0/WIN1/OBJWIN, alpha blending and
  * brightness increase/decrease, BG mosaic, forced blank. Not yet: OBJ mosaic, bitmap modes 3-5.
  *
- * Output: hal_sw_frame (240x160 BGR555); hal_sw_present() scales it 2x into the 640x480 RGB565
- * framebuffer at (80, 80).
+ * Output: hal_sw_frame (240x160 BGR555); hal_sw_present() scales it by 8/3 into the 640x480
+ * RGB565 framebuffer, rows 27..452, the same geometry as the PowerVR renderer (hal.h).
  *
  * This is a correctness-first reference renderer. It is far too slow for real hardware at 60
  * fps; a PowerVR tile renderer is the planned replacement.
  */
+#include <dc/minifont.h>
 #include <dc/video.h>
 #include <string.h>
 
@@ -369,22 +370,55 @@ emit:
     memcpy(hal_sw_frame[line], out, sizeof out);
 }
 
-/* 240x160 BGR555 -> 2x into the 640x480 RGB565 framebuffer at (80, 80). */
-void hal_sw_present(void) {
-    int x, y;
-    for (y = 0; y < H; y++) {
-        volatile u16 *fb = vram_s + (80 + y * 2) * 640 + 80;
-        const u16 *src = hal_sw_frame[y];
-        for (x = 0; x < W; x++) {
-            u16 c = src[x];
-            u16 p = (u16)(((c & 31) << 11) | (((c >> 5) & 31) << 6) | ((c >> 10) & 31));
-            fb[x * 2] = fb[x * 2 + 1] = p;
-            fb[640 + x * 2] = fb[640 + x * 2 + 1] = p;
-        }
+/* Screen pixel -> game pixel under its centre, for the geometry in hal.h. */
+static u16 xmap[HAL_FB_W];
+static u8 ymap[HAL_VIEW_ROWS];
+static char shown_msg[64];
+
+static void draw_status(void) {
+    const char *m = hal_save_message();
+    volatile u16 *band = vram_s + HAL_TEXT_Y * HAL_FB_W;
+    int len;
+    if (!m) m = "";
+    if (!strcmp(m, shown_msg)) return;
+    strncpy(shown_msg, m, sizeof shown_msg - 1);
+    for (len = 0; len < HAL_TEXT_ROWS * HAL_FB_W; len++) band[len] = 0;
+    len = (int)strlen(shown_msg);
+    if (len > HAL_FB_W / 8) len = HAL_FB_W / 8;
+    if (len) {
+        char tmp[HAL_FB_W / 8 + 1];
+        memcpy(tmp, shown_msg, len);
+        tmp[len] = 0;
+        minifont_set_color(200, 200, 200);
+        minifont_draw_str((u16 *)band + (HAL_FB_W - len * 8) / 2, HAL_FB_W, tmp);
     }
 }
 
+void hal_sw_present(void) {
+    int x, y, row = 0;
+    for (y = 0; y < H; y++) {
+        const u16 *src = hal_sw_frame[y];
+        u16 line[HAL_FB_W] __attribute__((aligned(4)));
+        for (x = 0; x < HAL_FB_W; x++) {
+            u16 c = src[xmap[x]];
+            line[x] = (u16)(((c & 31) << 11) | (((c >> 5) & 31) << 6) | ((c >> 10) & 31));
+        }
+        for (; row < HAL_VIEW_ROWS && ymap[row] == y; row++) {
+            volatile u32 *dst = (volatile u32 *)(vram_s + (HAL_VIEW_ROW0 + row) * HAL_FB_W);
+            const u32 *s32 = (const u32 *)line;
+            for (x = 0; x < HAL_FB_W / 2; x++) dst[x] = s32[x];
+        }
+    }
+    draw_status();
+}
+
 void hal_sw_init(void) {
+    int i;
     vid_set_mode(DM_640x480, PM_RGB565);
     vid_clear(0, 0, 0);
+    for (i = 0; i < HAL_FB_W; i++) xmap[i] = (u16)(((float)i + 0.5f - HAL_VIEW_X0) / HAL_VIEW_SCALE);
+    for (i = 0; i < HAL_VIEW_ROWS; i++)
+        ymap[i] = (u8)(((float)(HAL_VIEW_ROW0 + i) + 0.5f - HAL_VIEW_Y0) / HAL_VIEW_SCALE);
+    shown_msg[0] = 1; /* draw (or clear) the status line on the first frame */
+    shown_msg[1] = 0;
 }
