@@ -31,6 +31,7 @@ SEND = re.compile(r"^VMULCDSEND f=(\d+) gen=(\d+) slot=(\d+) port=(\w+) rot=(\d)
 MODE = re.compile(r"^VMULCD mode=(\w+) frame=(\d+) scene=([0-9a-f]+) level=(\d+)$")
 STATS = re.compile(r"^VMULCD stats .*$")
 MIN_INTERVAL = 2
+MAPLE_EAGAIN = -2  # vmu_draw_lcd: the VMU's maple frame is locked (a save writing to it); try again
 INK_THRESHOLD = 100
 KLONOA_ANIMS = 0x0805553C
 MOO_FRAMES = 0x081898E0
@@ -167,7 +168,7 @@ def main():
             names[int(m[1], 16)] = m[2]
     by_gen = {i["gen"]: i for i in images}
     print(f"{len(images)} images, {len(sends)} write attempts "
-          f"({sum(s['rv'] == 0 for s in sends)} ok, {sum(s['rv'] == -1 for s in sends)} busy), "
+          f"({sum(s['rv'] == 0 for s in sends)} ok, {sum(s['rv'] == MAPLE_EAGAIN for s in sends)} busy), "
           f"{len(modes)} mode switches")
     for m in modes:
         print(f"  frame {m['f']:5d}: {m['mode']:8s} (scene {names.get(m['scene'], hex(m['scene']))}, level {m['level']})")
@@ -252,7 +253,12 @@ def main():
     for s in sends:
         if s["rv"] == 0:
             first_ok.setdefault((s["port"], s["gen"]), s["f"])
-    busy = {(s["port"], s["gen"]) for s in sends if s["rv"] == -1}
+    # A VMU busy with a save (the save writer holds its maple frame for each block) answers
+    # MAPLE_EAGAIN: the picture waits, and one the game replaces meanwhile is never sent -- the save
+    # comes first. Those count as held by a busy VMU, not lost; the first picture after the save
+    # must still arrive on time (it is checked like any other).
+    busy = {(s["port"], s["gen"]) for s in sends if s["rv"] == MAPLE_EAGAIN}
+    held = 0
     ports = sorted({s["port"] for s in sends})
     for i, img in enumerate(images):
         for p in ports:
@@ -262,6 +268,9 @@ def main():
                     continue  # replaced before it was due: skipped, never stale
                 if nxt is None and img["f"] > images[-1]["f"] - MIN_INTERVAL:
                     continue  # the run stopped before it was due
+                if (p, img["gen"]) in busy:
+                    held += 1  # every attempt found the VMU busy, then a newer picture replaced it
+                    continue
                 late += 1
                 if late <= 5:
                     print(f"  image {img['gen']} (frame {img['f']}) never reached {p}")
@@ -271,8 +280,8 @@ def main():
                 else:
                     late += 1
     skipped = sum(1 for i, img in enumerate(images) for p in ports if (p, img["gen"]) not in first_ok)
-    print(f"delivery: {len(images) * len(ports) - skipped} image deliveries, {skipped} skipped (replaced within "
-          f"{MIN_INTERVAL} frames), {late} late or lost, {busy_late} delayed by a busy VMU")
+    print(f"delivery: {len(images) * len(ports) - skipped} image deliveries, {skipped - held} skipped (replaced within "
+          f"{MIN_INTERVAL} frames), {late} late or lost, {busy_late} delayed and {held} replaced while a VMU was busy")
     if late:
         fails.append("delivery")
 
