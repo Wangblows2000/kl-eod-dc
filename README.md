@@ -1,13 +1,13 @@
-# Klonoa: Empire of Dreams — native Dreamcast port (work in progress)
+# Klonoa: Empire of Dreams, Dreamcast port.
 
-This branch holds only the port code: `port/dc/`. It builds the game logic from
+It builds the game logic from
 [testyourmine/kleod](https://github.com/testyourmine/kleod) (MIT, © 2026 testyourmine), a matching
 decompilation, natively for the Dreamcast's SH-4 with KallistiOS. It contains no game code, data,
 or assets. The ROM and everything derived from it stay on your machine.
 
 ## Status
 
-- Runs the original game logic from boot into Vision 1-1 gameplay in flycast.
+- Runs the original game logic.
 - Draws with a native PowerVR renderer:
   - Gameplay runs at 59.8 fps in flycast, with no 120-frame window below 59.7 over a
     30,000-frame soak.
