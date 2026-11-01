@@ -625,9 +625,14 @@ done:
 
 /* ---- DMA ring ---------------------------------------------------------------------------- */
 
+/* Calls that got past the engine's lock check, and the SoundMain count at the latest VSync; the lag
+ * frames in hal_audio.c use them to keep exactly one mix between two VSyncs. */
+u32 hal_m4a_vsync_calls, hal_m4a_main_calls, hal_m4a_mains_at_vsync;
 void m4aSoundVSync(void) {
     struct SoundMixerState *si = SOUND_INFO;
     if (si->lockStatus - ID_NUMBER > 1) return;
+    hal_m4a_vsync_calls++;
+    hal_m4a_mains_at_vsync = hal_m4a_main_calls;
     if ((s32)(si->dmaCounter - 1) > 0) {
         si->dmaCounter--;
         return;
@@ -824,6 +829,7 @@ void SoundMain(void) {
     u64 t0;
     int line_limit = 0;
     if (si->lockStatus != ID_NUMBER) return;
+    hal_m4a_main_calls++;
     t0 = hal_now_us();
     si->lockStatus++;
     if (si->maxScanlines) line_limit = si->maxScanlines + vcount_adj();

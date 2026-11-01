@@ -28,6 +28,7 @@
 #include <dc/sound/sound.h>
 #include <dc/sound/stream.h>
 #include <dc/spu.h>
+#include <kos/irq.h>
 #include <kos/thread.h>
 #include <string.h>
 
@@ -135,14 +136,15 @@ static size_t stream_cb(snd_stream_hnd_t hnd, uintptr_t left, uintptr_t right, s
  * (VBlankIntr_Common: `if (!gFrameFinished) m4aSoundMain()`).
  *
  * The port does the same. next_due_ns is when the next sound frame is due. Whenever real time has
- * passed it, a "lag frame" runs: SoundMain, m4aSoundVSync and one block, the order the GBA's
- * handler and DMA give. Two places run them:
+ * passed it, a "lag frame" runs: m4aSoundVSync and one block, with SoundMain before or after it so
+ * that each VSync has exactly one mix behind it (lag_frame). Two places run them:
  *   - the poll thread, every few milliseconds, once a frame is half a frame overdue -- so the
  *     music keeps going *during* a long frame.
- *     It has the higher priority, so like the GBA's interrupt it runs to completion while the game
- *     thread waits. It stays out while the game thread is inside the VBlank handler or its own
- *     audio frame (hal_audio_busy), or inside an MP2K call (the engine's lock word, which the
- *     engine already checks against interrupts on the GBA);
+ *     Like the GBA's interrupt, each lag frame runs to completion while the game thread waits
+ *     (interrupts off for its duration; see run_lag_frames). It stays out while the game thread
+ *     is inside the VBlank handler or its own audio frame (hal_audio_busy), or inside an MP2K
+ *     call (the engine's lock word, which the engine already checks against interrupts on the
+ *     GBA);
  *   - the game thread after its own frame, for anything the poll thread could not do.
  * A lag frame's block is queued only while the ring is below target plus one frame; otherwise it is
  * dropped (the engine still advances, so the music stays in time without adding latency). More
@@ -156,16 +158,52 @@ static u64 next_due_ns;
 volatile int hal_audio_busy;
 static void produce(int keep);
 
-static void run_lag_frames(u64 now, u32 *counter) {
+extern u32 hal_m4a_vsync_calls, hal_m4a_main_calls, hal_m4a_mains_at_vsync; /* hal_m4a.c */
+static u32 lag_mains, vblank_mains, vblank_lag_mains;
+
+/* One lag frame. SoundMain mixes the segment after the one DMA plays, and m4aSoundVSync moves DMA
+ * on to it, so every VSync needs exactly one SoundMain since the one before -- none, and DMA plays
+ * a segment left over from the previous DMA cycle (16.7 ms of stale sound); two, and a frame of
+ * music is mixed and then overwritten. The game supplies one SoundMain per game frame, right after
+ * its VBlank wait (CommonWaitForNextFrame), and a lag frame can fall on either side of it: before,
+ * the lag frame mixes first and the game's call then covers the VSync after it; after, the game's
+ * call has already been used, so the lag frame mixes after its VSync for the next one. */
+static void lag_frame(void) {
+    if (hal_m4a_main_calls == hal_m4a_mains_at_vsync) { /* the segment VSync exposes is not mixed yet */
+        SoundMain();
+        lag_mains++;
+    }
+    m4aSoundVSync();
+    produce((int)(ring_wr - ring_rd) < TARGET_FILL + OUT_PER_FRAME);
+    if (hal_m4a_main_calls - lag_mains != vblank_mains - vblank_lag_mains) { /* the game has mixed this frame */
+        SoundMain();
+        lag_mains++;
+    }
+}
+
+/* Run the lag frames due by `now`. From the poll thread (`poll`), each one runs with interrupts
+ * off: KallistiOS v2.3 ages the priority of threads that wait (thread.c, thd_calc_prio), so the
+ * game thread can preempt the poll thread despite its lower static priority -- and did, in the
+ * middle of a lag frame's block, with its own VBlank and audio frame running inside it (seen in
+ * AUDIODUMP traces: a block that began before a VSync and ended after the next one). A lag frame
+ * must be atomic with respect to the game like the GBA's interrupt is: the engine state, the PSG
+ * model and the ring's write index are not shared safely otherwise. One lag frame takes well under
+ * a millisecond; interrupts come back on between frames. */
+static void run_lag_frames(u64 now, u32 *counter, int poll) {
     int n = 0;
     while (now >= next_due_ns && n++ < CATCHUP_MAX) {
         struct mixer_view *si = SOUND_INFO;
-        if (!si || si->lockStatus != ID_NUMBER) return; /* not initialised, or inside the engine */
-        SoundMain();
-        m4aSoundVSync();
-        produce((int)(ring_wr - ring_rd) < TARGET_FILL + OUT_PER_FRAME);
+        irq_mask_t irq = 0;
+        if (poll) irq = irq_disable();
+        /* not initialised, inside the engine, or (poll thread) the game thread is in its VBlank */
+        if (!si || si->lockStatus != ID_NUMBER || (poll && hal_audio_busy)) {
+            if (poll) irq_restore(irq);
+            return;
+        }
+        lag_frame();
         (*counter)++;
         next_due_ns += FRAME_NS;
+        if (poll) irq_restore(irq);
     }
 }
 
@@ -179,7 +217,7 @@ static void *poll_thread(void *arg) {
         snd_stream_poll(stream);
         /* Half a frame of slack: an on-time game frame that arrives a little late is not a lag frame. */
         if (!hal_audio_busy && next_due_ns && hal_now_us() * 1000ull >= next_due_ns + FRAME_NS / 2)
-            run_lag_frames(hal_now_us() * 1000ull - FRAME_NS / 2, &hal_audio_stats.lag_frames_thread);
+            run_lag_frames(hal_now_us() * 1000ull - FRAME_NS / 2, &hal_audio_stats.lag_frames_thread, 1);
         hal_audio_stats.poll_us += (u32)(hal_now_us() - t0);
         thd_sleep(POLL_MS);
     }
@@ -305,6 +343,10 @@ static void produce(int keep) {
 /* Called by hal_frame.c right after the VBlank handler, which it brackets with hal_audio_busy. */
 void hal_audio_frame(void) {
     u64 now;
+    /* The VBlank handler has just run m4aSoundVSync (and, in some handlers, SoundMain after it):
+     * SoundMain calls from here to the next VBlank that are not lag frames' are the game's. */
+    vblank_mains = hal_m4a_mains_at_vsync;
+    vblank_lag_mains = lag_mains;
     produce(1);
     if (underrun_to_log) { /* only this thread writes to the serial log: it may be mid-way through a frame dump */
         hal_log("AUDIO underrun before frame %lu (%s)\n", (unsigned long)hal_frame_count,
@@ -317,7 +359,7 @@ void hal_audio_frame(void) {
         next_due_ns = now;
     }
     next_due_ns += FRAME_NS;
-    run_lag_frames(now, &hal_audio_stats.catchup_frames);
+    run_lag_frames(now, &hal_audio_stats.catchup_frames, 0);
     if (next_due_ns > now + 2 * FRAME_NS) next_due_ns = now + FRAME_NS; /* ahead of real time: never wait */
     hal_audio_busy = 0;
 }
