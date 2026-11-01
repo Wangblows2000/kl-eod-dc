@@ -46,13 +46,15 @@ HAL_OBJS  := $(patsubst src/%.c,$(BUILD)/hal/%.o,$(HAL_SRCS)) $(BUILD)/hal/rom_b
 #                     AUDIODUMP=from-to records each stage's audio for those frames (tools/audiotrace.py;
 #                     needs flycast's FC_RAMDUMP test hook); AUDIOPROBE=1 replaces the sound with a
 #                     440 Hz / 1 kHz test signal, to measure the Dreamcast output path alone
+#   STALL=a,b,...     frames a, b, ... take STALL_MS (default 50) ms longer, like a heavy frame, so
+#                     the audio lag frames run at known points (tools/audio_regress.sh)
 #   GEOMPROBE=N       draw a test card instead of the game and hand frame N's whole 640x480
 #                     picture to the host (FC_RAMDUMP), for tools/geomcheck.py
 RENDERER ?= pvr
 AUDIO ?= 1
 OPTIONS := RENDERER=$(RENDERER) PVRDBG=$(PVRDBG) SCRIPT=$(SCRIPT) MAX_FRAMES=$(MAX_FRAMES) AUTOPLAY=$(AUTOPLAY) FREEZE=$(FREEZE) \
            AUDIO=$(AUDIO) AUDIOTEST=$(AUDIOTEST) AUDIOCHECK=$(AUDIOCHECK) AUDIODUMP=$(AUDIODUMP) \
-           AUDIOPROBE=$(AUDIOPROBE) GEOMPROBE=$(GEOMPROBE)
+           AUDIOPROBE=$(AUDIOPROBE) GEOMPROBE=$(GEOMPROBE) STALL=$(STALL) STALL_MS=$(STALL_MS)
 
 INC     := $(BUILD)/include
 GAME_CPPFLAGS := -nostdinc -I $(ROOT)/tools/agbcc/include -iquote $(INC) -DREVISION=0 -DENGLISH -DPLATFORM_DREAMCAST
@@ -103,6 +105,7 @@ $(BUILD)/options.h: FORCE
 	   $(if $(AUDIOTEST),echo '#define HAL_AUDIO_TONE 1';) \
 	   $(if $(AUDIOPROBE),echo '#define HAL_AUDIO_PROBE 1';) \
 	   $(if $(GEOMPROBE),echo '#define HAL_GEOM_PROBE $(GEOMPROBE)';) \
+	   $(if $(STALL),echo '#define HAL_STALL_FRAMES $(STALL)'; echo '#define HAL_STALL_MS $(or $(STALL_MS),50)';) \
 	   $(if $(AUDIOCHECK),echo '#define HAL_AUDIO_CHECK 1';) \
 	   $(if $(AUDIODUMP),echo '#define HAL_AUDIO_DUMP_FROM $(firstword $(subst -, ,$(AUDIODUMP)))'; \
 	     echo '#define HAL_AUDIO_DUMP_TO $(lastword $(subst -, ,$(AUDIODUMP)))';) \

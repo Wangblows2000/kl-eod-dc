@@ -11,7 +11,10 @@
 #             The engine's output against the cartridge's own engine (needs the Python module
 #             unicorn and <kleod>/kleod.elf); every block whole and one mix per VSync; the hardware
 #             model's output against what the AICA played; the capture's format, peak and clipping.
-#   3. route  tests/audio.txt with AUDIODUMP=1-1250: menu sound effects over the title and
+#   3. stall  the boot again with frames 82 and 130 made 50 ms long (STALL=), so that lag frames run
+#             right after the game turns sound on and in the middle of the jingle: the song
+#             comparison and the stream check again.
+#   4. route  tests/audio.txt with AUDIODUMP=1-1250: menu sound effects over the title and
 #             file-select music; the same checks without the song comparison.
 #
 # Needs a flycast with the FC_AUDIO_DUMP and FC_RAMDUMP test hooks (tools/flycast-test-hooks.patch)
@@ -49,6 +52,17 @@ step "boot: hardware model against the AICA output -- title music"
 $PY tools/audiotrace.py stream "$OUT/boot.recs" "$OUT/boot.raw" --frames 400-900 || rc=1
 step "boot: capture"
 $PY tools/audiotrace.py capture "$OUT/boot.raw" --wav "$OUT/boot.wav" || rc=1
+
+# The same boot with two 50 ms frames: frame 82, in which the game turns sound back on for the
+# jingle (m4aSoundVSyncOn), and frame 130, in the middle of it. Each runs the poll thread's lag
+# frames, which must leave the engine's output exactly the cartridge's.
+run stall 30 AUDIODUMP=1-300 MAX_FRAMES=320 STALL=82,130
+[ -s "$OUT/stall.recs" ] || { echo "stall: no AUDIODUMP records"; exit 3; }
+step "stall: engine with lag frames at the jingle's start and middle, against the cartridge's engine"
+$PY tools/audiotrace.py engine "$OUT/stall.recs" --rom "$ROOT/baserom.gba" --elf "$ROOT/kleod.elf" --song 33 \
+    --frames 100 --expect-lag || rc=1
+step "stall: hardware model against the AICA output"
+$PY tools/audiotrace.py stream "$OUT/stall.recs" "$OUT/stall.raw" --frames 83-180 || rc=1
 
 run route 70 SCRIPT=tests/audio.txt AUDIODUMP=1-1250
 [ -s "$OUT/route.recs" ] || { echo "route: no AUDIODUMP records"; exit 3; }

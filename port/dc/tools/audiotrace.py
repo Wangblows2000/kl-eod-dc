@@ -40,6 +40,7 @@ MAXS = 704         # GBASND_MAX_SAMPLES
 HDR = struct.Struct("<IHHBBBBIII")  # struct dump_rec in hal_audio.c, up to the sample data
 REC = HDR.size + 2 * SEG + 4 * MAXS
 CAP_RATE = 44100
+ID_NUMBER = 0x68736D53  # the engine's lock word when idle (ID_NUMBER + 1 inside it, + 10 sound off)
 AICA_STEP = 935    # (1024 | FNS) >> 1 with FNS = ((40280 << 10) / 22050) & 1023 = 846, OCT -1
 fails = []
 
@@ -172,16 +173,23 @@ def cmd_engine(a):
     torn = [i for i, r in enumerate(recs) if r["seg"] != 0xFF and r["dc"] and r["seg"] != period - r["dc"]]
     check(not torn, f"every block rendered whole between two VSyncs ({len(torn)} torn"
                     f"{': first at frame ' + str(recs[torn[0]]['frame']) if torn else ''})")
+    # The one VSync allowed no mix behind it is the first after the game turns sound on
+    # (m4aSoundVSyncOn): DMA restarts on a segment nothing has mixed yet, on the cartridge too. Any
+    # other is a stale segment, audible or not -- a silent one is how a mix in the wrong place
+    # shows at the start of a song.
     bad = []
     for p, r in zip(recs, recs[1:]):
         dv, dm = r["vsyncs"] - p["vsyncs"], r["mains"] - p["mains"]
         loud = np.abs(r["a"].astype(int)).max() > 1 if r["flags"] & 1 else False
-        if dv == 1 and dm != 1 and loud:
+        sound_on = (p["lock"] - ID_NUMBER) & 0xFFFFFFFF <= 1 and p["vsyncs"] > 0
+        if dv == 1 and dm != 1 and (loud or sound_on):
             bad.append(r["frame"])
     check(not bad, f"one SoundMain behind every VSync while sound plays ({len(bad)} exceptions"
                    f"{': frames ' + str(bad[:5]) if bad else ''})")
     lag = sum(1 for r in recs if not r["flags"] & 8)
     print(f"  {lag} lag-frame blocks, {sum(1 for r in recs if not r['flags'] & 4)} dropped")
+    if a.expect_lag:
+        check(lag > 0, "the run has lag frames to test (STALL= build)")
     if a.song is None:
         return 1 if fails else 0
     # Every segment the engine handed to DMA, whether or not the ring kept its block (a lag frame's
@@ -224,8 +232,9 @@ def cmd_stream(a):
     # Windows are aligned in order from the start of the stream, even before frame A, so that a
     # repeating passage (looped music) cannot be matched to the wrong repeat. The capture position
     # minus the model position only grows, by the silence an underrun inserts; it starts at the
-    # silence the AICA plays before the first block.
-    shift, unaligned, quiet = 0, 0, 0
+    # silence the AICA plays before the first block, which is searched in full (it grows with
+    # anything the boot does before the game's first frame, such as reading the VMUs).
+    shift, unaligned, quiet, aligned = 0, 0, 0, False
     for pos in range(0, s1 - W, W):
         m = [model[c][pos:pos + W] for c in (0, 1)]
         if min(np.abs(m[0]).max(), np.abs(m[1]).max()) < 1000:
@@ -234,6 +243,8 @@ def cmd_stream(a):
         if pos + shift + W > len(cap):
             break
         limit = min(4096 + quiet * W, 1 << 18)  # underruns happen during the quiet parts (loads)
+        if not aligned:
+            limit = len(cap)  # the AICA's silence before the first block lasts as long as the boot does
         quiet = 0
         best = None
         src = slice(int(pos * AICA_STEP / 1024) - 2, int((pos + W) * AICA_STEP / 1024) + 8)
@@ -264,7 +275,7 @@ def cmd_stream(a):
             continue
         try_phases(range(best[2] - 60, best[2] + 61, 4), [best[1]])
         r0, o, ph, mm = best
-        shift = o - pos
+        shift, aligned = o - pos, True
         if pos < s0:
             continue  # aligned only to keep track, before the frames asked for
         x = [mm[c][2:2 + W] for c in (0, 1)]
@@ -326,6 +337,7 @@ def main():
     p.add_argument("--rom")
     p.add_argument("--elf")
     p.add_argument("--song", type=int)
+    p.add_argument("--expect-lag", action="store_true", help="fail unless the records hold lag frames")
     p.add_argument("--frames", type=int, default=100, help="song frames to compare (default 100)")
     p = sub.add_parser("stream")
     p.add_argument("records")

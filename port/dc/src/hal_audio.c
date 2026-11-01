@@ -159,8 +159,8 @@ static u64 next_due_ns;
 volatile int hal_audio_busy;
 static void produce(int keep);
 
-extern u32 hal_m4a_vsync_calls, hal_m4a_main_calls, hal_m4a_mains_at_vsync; /* hal_m4a.c */
-static u32 lag_mains, vblank_mains, vblank_lag_mains;
+extern u32 hal_m4a_vsync_calls, hal_m4a_main_calls, hal_m4a_mains_at_vsync, hal_m4a_main_entries; /* hal_m4a.c */
+static u32 lag_mains, vblank_entries, vblank_lag_mains;
 
 /* One lag frame. SoundMain mixes the segment after the one DMA plays, and m4aSoundVSync moves DMA
  * on to it, so every VSync needs exactly one SoundMain since the one before -- none, and DMA plays
@@ -168,15 +168,22 @@ static u32 lag_mains, vblank_mains, vblank_lag_mains;
  * music is mixed and then overwritten. The game supplies one SoundMain per game frame, right after
  * its VBlank wait (CommonWaitForNextFrame), and a lag frame can fall on either side of it: before,
  * the lag frame mixes first and the game's call then covers the VSync after it; after, the game's
- * call has already been used, so the lag frame mixes after its VSync for the next one. */
+ * call has already been used, so the lag frame mixes after its VSync for the next one.
+ *
+ * "After" means after the game's *call*, whether or not it mixed: when the game turns sound back on
+ * (m4aSoundVSyncOn) later in a frame whose SoundMain the lock turned away, the first VSync plays an
+ * unmixed segment on the cartridge too, and the mixes follow one VSync behind. Mixing first there
+ * shifted the whole song a segment early and left a silent segment three frames in (the Namco
+ * jingle at boot, when a long frame fell right after VSyncOn). */
 static void lag_frame(void) {
-    if (hal_m4a_main_calls == hal_m4a_mains_at_vsync) { /* the segment VSync exposes is not mixed yet */
+    int game_called = hal_m4a_main_entries - lag_mains != vblank_entries - vblank_lag_mains;
+    if (!game_called && hal_m4a_main_calls == hal_m4a_mains_at_vsync) { /* VSync's segment not mixed yet */
         SoundMain();
         lag_mains++;
     }
     m4aSoundVSync();
     produce((int)(ring_wr - ring_rd) < TARGET_FILL + OUT_PER_FRAME);
-    if (hal_m4a_main_calls - lag_mains != vblank_mains - vblank_lag_mains) { /* the game has mixed this frame */
+    if (game_called) { /* the game's call for this frame is spent: mix for the next VSync */
         SoundMain();
         lag_mains++;
     }
@@ -415,13 +422,19 @@ static void produce(int keep) {
     hal_audio_stats.hw_us += (u32)(hal_now_us() - t0);
 }
 
+/* Called by hal_frame.c right before the VBlank handler. The handler runs m4aSoundVSync (and, in some
+ * games' handlers, SoundMain after it): SoundMain calls from here to the next VBlank that are not lag
+ * frames' are the game's. hal_audio_busy keeps the poll thread's lag frames out until
+ * hal_audio_frame. */
+void hal_audio_vblank_begin(void) {
+    hal_audio_busy = 1;
+    vblank_entries = hal_m4a_main_entries;
+    vblank_lag_mains = lag_mains;
+}
+
 /* Called by hal_frame.c right after the VBlank handler, which it brackets with hal_audio_busy. */
 void hal_audio_frame(void) {
     u64 now;
-    /* The VBlank handler has just run m4aSoundVSync (and, in some handlers, SoundMain after it):
-     * SoundMain calls from here to the next VBlank that are not lag frames' are the game's. */
-    vblank_mains = hal_m4a_mains_at_vsync;
-    vblank_lag_mains = lag_mains;
 #ifdef HAL_AUDIO_DUMP_FROM
     dump_game = 1;
     produce(1);
@@ -510,6 +523,7 @@ int hal_audio_init(void) {
 }
 volatile int hal_audio_busy;
 void hal_m4a_report(void) {}
+void hal_audio_vblank_begin(void) {}
 void hal_audio_frame(void) {}
 void hal_audio_stats_reset(void) {}
 

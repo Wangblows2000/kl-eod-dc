@@ -73,6 +73,21 @@ static void raise_irq(u16 ie_bit, IntrFunc fn) {
     INTR_CHECK |= ie_bit;
 }
 
+#ifdef HAL_STALL_FRAMES
+/* STALL=a,b test builds: those frames run HAL_STALL_MS longer before their VBlank, as a heavy frame
+ * would, so the audio lag frames run at known points. A busy wait, like the game's own work: the
+ * poll thread preempts it as it would a long frame. */
+static void test_stall(void) {
+    static const u32 frames[] = {HAL_STALL_FRAMES};
+    unsigned i;
+    for (i = 0; i < sizeof frames / sizeof *frames; i++)
+        if (hal_frame_count == frames[i]) {
+            u64 end = hal_now_us() + HAL_STALL_MS * 1000ull;
+            while (hal_now_us() < end) {}
+        }
+}
+#endif
+
 static void enter_line(int line) {
     u16 ds = IO16(REG_DISPSTAT_OFF);
     int lyc = ds >> 8;
@@ -83,11 +98,14 @@ static void enter_line(int line) {
     IO16(REG_VCOUNT_OFF) = (u16)line;
     beam = line;
     if (line == 160) {
+#ifdef HAL_STALL_FRAMES
+        test_stall();
+#endif
         /* The visible picture is complete: present it before the VBlank handler starts updating
          * OAM/VRAM/palettes for the next frame. */
         hal_video_present();
         hal_dma_vblank();
-        hal_audio_busy = 1; /* keeps the audio thread's lag frames out of the handler's m4aSoundVSync */
+        hal_audio_vblank_begin(); /* keeps the audio thread's lag frames out of the handler's m4aSoundVSync */
         if (irq_enabled(IE_VBLANK, DISPSTAT_VBLANK_INTR)) raise_irq(IE_VBLANK, gIntrTable.vBlank);
         hal_audio_frame(); /* play this frame's DMA segment and PSG state; clears hal_audio_busy */
     }

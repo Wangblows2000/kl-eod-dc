@@ -121,6 +121,7 @@ struct hal_audio_stats {
 };
 extern struct hal_audio_stats hal_audio_stats;
 int hal_audio_init(void);   /* before hal_mem_init: loads the AICA driver */
+void hal_audio_vblank_begin(void); /* once per frame, before the VBlank handler; sets hal_audio_busy */
 void hal_audio_frame(void); /* once per frame, after the VBlank handler; clears hal_audio_busy */
 extern volatile int hal_audio_busy; /* set by hal_frame.c around the VBlank handler */
 void hal_audio_stats_reset(void);
