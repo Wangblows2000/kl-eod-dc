@@ -30,6 +30,7 @@
 #include <dc/spu.h>
 #include <kos/irq.h>
 #include <kos/thread.h>
+#include <math.h>
 #include <string.h>
 
 #include "hal.h"
@@ -260,6 +261,60 @@ static void count_quiet_runs(const s16 *b, int n) {
 }
 #endif
 
+#ifdef HAL_AUDIO_DUMP_FROM
+/* AUDIODUMP=from-to test builds: every produce() call while the frame counter is in the range is
+ * recorded in RAM (so the capture does not disturb timing): the two pcmBuffer segments DMA plays
+ * (the engine's output) and the rendered block (the hardware model's output, s16 L,R). After the
+ * range a serial line asks the emulator (Flycast with the FC_RAMDUMP test hook) to write the records
+ * to a file, read by tools/audiotrace.py. */
+#include <stdint.h>
+#include <stdlib.h>
+struct dump_rec {
+    u32 frame;
+    u16 spf, n;
+    u8 flags; /* 1 seg A, 2 seg B, 4 kept (in the ring), 8 game thread (else poll-thread lag frame) */
+    u8 dma_counter, seg, tid;
+    u32 vsyncs, mains; /* m4aSoundVSync / SoundMain calls so far (that got past the lock check) */
+    u32 lock;          /* the engine's lock word */
+    s8 a[GBASND_MAX_SEG], b[GBASND_MAX_SEG];
+    s16 blk[GBASND_MAX_SAMPLES * 2];
+};
+#define DUMP_RECS ((HAL_AUDIO_DUMP_TO - HAL_AUDIO_DUMP_FROM + 1) * 5 / 4 + 64) /* lag frames add records */
+static struct dump_rec *dump_buf;
+static int dump_count, dump_game, dump_flushed;
+
+static void audio_dump(const s8 *a, const s8 *b, int spf, const s16 *blk, int n, int keep) {
+    struct dump_rec *r;
+    if (hal_frame_count < HAL_AUDIO_DUMP_FROM || hal_frame_count > HAL_AUDIO_DUMP_TO) return;
+    if (!dump_buf || dump_count >= DUMP_RECS) return; /* allocated by hal_audio_init */
+    r = &dump_buf[dump_count++];
+    r->frame = hal_frame_count;
+    r->spf = (u16)spf;
+    r->n = (u16)(keep ? n : 0);
+    r->flags = (a ? 1 : 0) | (b ? 2 : 0) | (keep ? 4 : 0) | (dump_game ? 8 : 0);
+    r->dma_counter = SOUND_INFO ? SOUND_INFO->dmaCounter : 0;
+    r->seg = SOUND_INFO && a ? (u8)((a - ((const s8 *)SOUND_INFO + PCM_BUFFER_OFFSET)) / spf) : 0xFF;
+    r->vsyncs = hal_m4a_vsync_calls;
+    r->mains = hal_m4a_main_calls;
+    r->tid = (u8)thd_get_current()->tid;
+    r->lock = SOUND_INFO ? SOUND_INFO->lockStatus : 0;
+    memset(r->a, 0, sizeof r->a);
+    memset(r->b, 0, sizeof r->b);
+    if (a) memcpy(r->a, a, spf);
+    if (b) memcpy(r->b, b, spf);
+    if (keep) memcpy(r->blk, blk, n * 4);
+}
+
+static void audio_dump_flush(void) {
+    if (dump_flushed || hal_frame_count <= HAL_AUDIO_DUMP_TO) return;
+    dump_flushed = 1;
+    /* Hand the records to the emulator's FC_RAMDUMP hook (a local Flycast test patch) in one go. */
+    hal_log("AUDIODUMP %d records of %d bytes\n", dump_count, (int)sizeof *dump_buf);
+    hal_log("FCDUMP %08lx %08lx\n", (unsigned long)(uintptr_t)dump_buf,
+            (unsigned long)(dump_count * sizeof *dump_buf));
+}
+#endif
+
 /* Render the segment DMA plays now plus the PSG into one block; append it to the ring if `keep`. */
 static void produce(int keep) {
     u64 t0 = hal_now_us();
@@ -303,6 +358,9 @@ static void produce(int keep) {
     if (!keep) {
         s16 scratch[GBASND_MAX_SAMPLES * 2];
         gbasnd_render(scratch, n, seg_a, seg_b, spf); /* keeps the PSG running in step */
+#ifdef HAL_AUDIO_DUMP_FROM
+        audio_dump(seg_a, seg_b, spf, scratch, n, 0);
+#endif
         hal_audio_stats.dropped_frames++;
         hal_audio_stats.hw_us += (u32)(hal_now_us() - t0);
         return;
@@ -315,6 +373,23 @@ static void produce(int keep) {
     {
         s16 block[GBASND_MAX_SAMPLES * 2];
         int peak = gbasnd_render(block, n, seg_a, seg_b, spf), j;
+#ifdef HAL_AUDIO_PROBE
+        /* AUDIOPROBE=1 test builds: what goes into the ring is a known signal instead -- 440 Hz
+         * left, 1 kHz right, 8000 peak, continuous across blocks -- so the Dreamcast side alone
+         * (ring, stream, AICA) can be measured from a capture (tools/audiotrace.py probe). */
+        {
+            static u32 ph_l, ph_r;
+            for (j = 0; j < n; j++) {
+                ph_l += (u32)((440ull << 32) / GBASND_RATE);
+                ph_r += (u32)((1000ull << 32) / GBASND_RATE);
+                block[2 * j] = (s16)(8000.0f * sinf((float)ph_l * (6.2831853f / 4294967296.0f)));
+                block[2 * j + 1] = (s16)(8000.0f * sinf((float)ph_r * (6.2831853f / 4294967296.0f)));
+            }
+        }
+#endif
+#ifdef HAL_AUDIO_DUMP_FROM
+        audio_dump(seg_a, seg_b, spf, block, n, 1);
+#endif
 #ifdef HAL_AUDIO_CHECK /* AUDIOCHECK=1 test builds only */
         count_quiet_runs(block, n);
 #endif
@@ -347,7 +422,14 @@ void hal_audio_frame(void) {
      * SoundMain calls from here to the next VBlank that are not lag frames' are the game's. */
     vblank_mains = hal_m4a_mains_at_vsync;
     vblank_lag_mains = lag_mains;
+#ifdef HAL_AUDIO_DUMP_FROM
+    dump_game = 1;
     produce(1);
+    dump_game = 0;
+    audio_dump_flush();
+#else
+    produce(1);
+#endif
     if (underrun_to_log) { /* only this thread writes to the serial log: it may be mid-way through a frame dump */
         hal_log("AUDIO underrun before frame %lu (%s)\n", (unsigned long)hal_frame_count,
                 underrun_to_log == 2 ? "audible" : "during silence");
@@ -376,6 +458,10 @@ int hal_audio_init(void) {
         return -1;
     }
     snd_stream_set_callback_direct(stream, stream_cb);
+#ifdef HAL_AUDIO_DUMP_FROM
+    dump_buf = malloc(sizeof *dump_buf * DUMP_RECS); /* here, not in a lag frame (interrupts off) */
+    if (!dump_buf) hal_log("audio: no memory for AUDIODUMP records\n");
+#endif
     snd_stream_volume(stream, 255);
     snd_stream_start(stream, OUT_RATE, 1);
     {

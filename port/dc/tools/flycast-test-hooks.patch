@@ -1,0 +1,92 @@
+Test hooks for flycast used by tools/audio_regress.sh and tools/audiocheck.py (not part of the port).
+Applies to flycast 7adbf3caef251b153e348df3f469a0f35878339d (github.com/flyinghead/flycast) with
+`git apply`; both hooks do nothing unless their environment variable is set.
+
+  FC_AUDIO_DUMP=<file>  write the AICA's 44.1 kHz output as raw s16 stereo (L, R)
+  FC_RAMDUMP=<file>     when the guest prints a serial line "FCDUMP <addr> <len>" (hex), write that
+                        range of main RAM to <file> (AUDIODUMP builds hand over their records so)
+
+diff --git a/core/audio/audiostream.cpp b/core/audio/audiostream.cpp
+index 3799393..4caaef3 100644
+--- a/core/audio/audiostream.cpp
++++ b/core/audio/audiostream.cpp
+@@ -48,8 +48,26 @@ AudioBackend *AudioBackend::getBackend(const std::string& slug)
+ 	return nullptr;
+ }
+ 
++static FILE *dumpFile;
++static bool dumpChecked;
++
+ void WriteSample(s16 r, s16 l)
+ {
++	if (!dumpChecked)
++	{
++		dumpChecked = true;
++		const char *path = getenv("FC_AUDIO_DUMP");	// raw 44.1 kHz s16 stereo (L, R), for tests
++		if (path != nullptr)
++			dumpFile = fopen(path, "wb");
++	}
++	if (dumpFile != nullptr)
++	{
++		s16 frame[2] = { l, r };
++		fwrite(frame, sizeof(frame), 1, dumpFile);
++		static u32 dumped;
++		if (++dumped % 4410 == 0)
++			fflush(dumpFile);
++	}
+ 	Buffer[writePtr].r = r * config::AudioVolume.dbPower();
+ 	Buffer[writePtr].l = l * config::AudioVolume.dbPower();
+ 
+diff --git a/core/hw/sh4/modules/serial.cpp b/core/hw/sh4/modules/serial.cpp
+index a36d95b..4571a85 100644
+--- a/core/hw/sh4/modules/serial.cpp
++++ b/core/hw/sh4/modules/serial.cpp
+@@ -18,6 +18,8 @@
+ #include "modules.h"
+ #include "hw/sh4/sh4_sched.h"
+ #include "serialize.h"
++#include "hw/sh4/sh4_mem.h"
++#include <cstdio>
+ 
+ //#define DEBUG_SCIF
+ 
+@@ -137,9 +139,39 @@ void SCIFSerialPort::updateBaudRate()
+ 	sh4_sched_request(schedId, frameSize * cyclesPerBit);
+ }
+ 
++// Test hook (local patch): a serial line "FCDUMP <addr hex> <len hex>" from the guest writes that
++// range of main RAM to the file named by $FC_RAMDUMP, so a test build can hand over bulk data
++// without pushing it through the emulated serial port.
++static void ramdump_check(u8 data)
++{
++	static char line[64];
++	static int len;
++	if (data != '\n') {
++		if (len < (int)sizeof(line) - 1)
++			line[len++] = (char)data;
++		return;
++	}
++	line[len] = 0;
++	len = 0;
++	unsigned addr, size;
++	const char *path = getenv("FC_RAMDUMP");
++	if (path == nullptr || sscanf(line, "FCDUMP %x %x", &addr, &size) != 2)
++		return;
++	addr &= RAM_MASK;
++	if (size > RAM_SIZE - addr)
++		size = RAM_SIZE - addr;
++	FILE *f = fopen(path, "wb");
++	if (f != nullptr) {
++		fwrite(&mem_b[addr], 1, size, f);
++		fclose(f);
++		fprintf(stderr, "FCDUMP wrote %u bytes from %08x to %s\n", size, addr, path);
++	}
++}
++
+ // SCIF SCFTDR2 - Transmit FIFO Data Register
+ void SCIFSerialPort::SCFTDR2_write(u8 data)
+ {
++	ramdump_check(data);
+ 	SCIF_LOG("serial out %02x %c fifo_sz %d", data, data == '\0' ? ' ' : data, (int)txFifo.size());
+ 	if (SCIF_SCFCR2.TFRST == 1)
+ 		return;

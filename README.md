@@ -49,13 +49,17 @@ Build options:
 | `AUDIO=0` | silent build |
 | `AUDIOTEST=1` | add a 440 Hz test tone |
 | `AUDIOCHECK=1` | count gaps in the produced sound and report the engine behaviours used |
+| `AUDIOPROBE=1` | replace the sound with a 440 Hz / 1 kHz test signal (output-path test) |
+| `AUDIODUMP=A-B` | record each sound stage for frames A–B (needs flycast's test hooks) |
 
 Options are recorded in `build/options.h`, and changing one rebuilds what depends on it.
 
 Tests, with flycast:
 - `port/dc/tools/regress.sh` — visual regression, PowerVR against the software renderer;
 - `tests/perf.txt` and `tests/soak.txt` with `tools/perfstats.py` — frame rate, timing and
-  sound statistics.
+  sound statistics;
+- `port/dc/tools/audio_regress.sh` — sound, stage by stage: the Namco voice against the
+  cartridge's own engine, and what the AICA plays against what the port produced (report 3, §8).
 
 Tests on the host:
 - `make test-audio` — the GBA sound model against GBATEK;

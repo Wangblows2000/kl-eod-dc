@@ -1,0 +1,10 @@
+# Sound regression input (tools/audio_regress.sh): the route's first presses, without frame dumps --
+# Namco jingle and voice, title music, then menu sound effects over the title and file-select music.
+press 300 4 START
+press 450 4 START
+press 600 4 START
+press 750 4 A
+press 900 4 START
+press 1050 4 A
+press 1200 4 START
+end 1300
