@@ -1,0 +1,11 @@
+# VMU save test input (tools/save_regress.sh): title -> file select -> file 1 -> on to the world
+# map, which the game saves on the way. With no save, file 1 starts a new game (opening, vision
+# select); with a save, the same presses load it. Frame 1000 shows the file select screen.
+press 300 4 START
+press 450 4 START
+press 600 4 START
+press 750 4 A
+dump 1000
+press 1050 4 A
+press 1200 4 START
+end 1600

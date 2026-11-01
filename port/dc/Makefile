@@ -155,6 +155,13 @@ clean:
 # ---- host-side audio tests (no Dreamcast needed) -------------------------------------------
 # test-audio: the GBA sound model against GBATEK's numbers (tools/gbasnd_test.c).
 # The MP2K engine port is checked against the ROM's own code by tools/m4a_difftest/difftest.py.
+# test-save: the VMU save record and its two-file store against a mock VMU (tools/save_test.c).
+.PHONY: test-save
+test-save:
+	@mkdir -p $(BUILD)
+	cc -O2 -Wall -Wextra -I src src/hal_save_core.c tools/save_test.c -o $(BUILD)/save_test
+	$(BUILD)/save_test
+
 .PHONY: test-audio
 test-audio:
 	@mkdir -p $(BUILD)

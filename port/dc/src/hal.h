@@ -104,6 +104,12 @@ extern volatile int hal_audio_busy; /* set by hal_frame.c around the VBlank hand
 void hal_audio_stats_reset(void);
 void hal_m4a_report(void); /* AUDIOCHECK=1: engine behaviours exercised (hal_m4a.c) */
 
+/* hal_save.c: VMU saves of the EEPROM image (hal_eeprom.c) */
+void hal_save_init(void);               /* before AgbMain: load the newest save, start the writer */
+void hal_save_frame(void);              /* once per frame: hand a changed EEPROM image to the writer */
+void hal_save_flush(u32 timeout_ms);    /* test runs, before exiting */
+const char *hal_save_message(void);     /* status line for the letterbox bar, or NULL */
+
 /* hal_input.c */
 void hal_input_poll(void); /* writes REG_KEYINPUT */
 int hal_input_quit_requested(void);

@@ -67,6 +67,8 @@ int main(int argc, char **argv) {
 
     IO16(0x000) = 0x0080; /* DISPCNT: forced blank, as the BIOS leaves it */
     hal_video_init();
+    maple_wait_scan(); /* every VMU enumerated before the save is looked for */
+    hal_save_init();
     hal_frame_init();
     hal_input_poll();
 

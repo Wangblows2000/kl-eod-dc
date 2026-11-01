@@ -104,6 +104,7 @@ void hal_report_memory(void) {
 
 static void finish_frame(void) {
     hal_input_poll();
+    hal_save_frame();
     hal_frame_count++;
     hal_prof_frame_end();
     {
@@ -119,6 +120,7 @@ static void finish_frame(void) {
         hal_report_memory();
         if (hal_renderer == HAL_RENDER_PVR) hal_pvr_report_features();
         hal_m4a_report();
+        hal_save_flush(4000);
 #ifdef HAL_FREEZE
         for (;;) thd_sleep(1000); /* test builds: keep the last frame on screen for capture */
 #endif

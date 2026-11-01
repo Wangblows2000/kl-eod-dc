@@ -1,7 +1,7 @@
 /* Replacement for kleod src/eeprom.c (which bit-bangs the cartridge's serial EEPROM through
  * DMA3 and a timer interrupt). Same API, backed by a 512-byte RAM image (4 Kbit EEPROM,
- * 64 double-words). VMU persistence is a TODO; the image starts blank, as a new cartridge's
- * EEPROM does (all 0xFF).
+ * 64 double-words), which hal_save.c loads from and saves to the VMU. A write that changes the
+ * image bumps hal_eeprom_gen; hal_save.c picks the change up at the end of the frame.
  */
 #include <string.h>
 
@@ -17,21 +17,23 @@ typedef struct EepromConfig {
     u8 addressWidth;
 } EepromConfig;
 
-static u8 eeprom[0x2000];
+/* Klonoa identifies a 4 Kbit part (main.c: IdentifyEeprom(4)); the image holds exactly that. */
+static u8 eeprom[512];
 static u16 nbr_addresses = 64;
 const EepromConfig *gEepromConfig;
 static const EepromConfig cfg4k = {512, 64, 3, 6};
-static const EepromConfig cfg64k = {8192, 1024, 3, 14};
+volatile u32 hal_eeprom_gen;
+
+const u8 *hal_eeprom_image(void) { return eeprom; }
+u8 *hal_eeprom_image_rw(void) { return eeprom; }
 
 u16 IdentifyEeprom(u16 sizeInKbit) {
-    static int init;
-    if (!init) {
-        memset(eeprom, 0xFF, sizeof eeprom);
-        init = 1;
-    }
-    gEepromConfig = sizeInKbit == 4 ? &cfg4k : &cfg64k;
-    nbr_addresses = gEepromConfig->nbrAddresses;
-    return sizeInKbit == 4 || sizeInKbit == 64 ? 0 : 1;
+    /* The image is set up by hal_save_init() (VMU save, or blank). Only the 4 Kbit part exists
+     * here; a request for another size is refused, as the cartridge's detection would. */
+    gEepromConfig = &cfg4k;
+    nbr_addresses = cfg4k.nbrAddresses;
+    if (sizeInKbit != 4) hal_log("eeprom: IdentifyEeprom(%u): only 4 Kbit is supported\n", sizeInKbit);
+    return sizeInKbit == 4 ? 0 : 1;
 }
 
 void EepromTimerIntr(void) {}
@@ -52,7 +54,10 @@ u16 ReadEepromDword(u16 address, u16 *dest) {
 
 u16 ProgramEepromDword(u16 address, u16 *src) {
     if (address >= nbr_addresses) return EEPROM_OUT_OF_RANGE;
-    memcpy(eeprom + address * 8u, src, 8);
+    if (memcmp(eeprom + address * 8u, src, 8)) {
+        memcpy(eeprom + address * 8u, src, 8);
+        hal_eeprom_gen++;
+    }
     return 0;
 }
 
