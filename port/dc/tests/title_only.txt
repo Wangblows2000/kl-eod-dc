@@ -1,0 +1,2 @@
+# Short visual check: hold on the title screen.
+end 700

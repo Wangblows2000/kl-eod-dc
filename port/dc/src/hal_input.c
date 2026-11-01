@@ -47,6 +47,7 @@ void hal_input_poll(void) {
         }
     }
     if (hal_scripted_input && hal_frame_count < hal_scripted_input_len) pressed |= hal_scripted_input[hal_frame_count];
+    pressed |= hal_test_keys(hal_frame_count + 1); /* keys seen by the game during the next frame */
 #ifdef HAL_AUTOPLAY
     /* Headless test builds: tap START for 4 frames every HAL_AUTOPLAY frames, after the boot logos. */
     if (hal_frame_count > 240 && (hal_frame_count % HAL_AUTOPLAY) < 4) pressed |= KEY_START;

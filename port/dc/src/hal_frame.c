@@ -80,20 +80,29 @@ static void enter_line(int line) {
     IO16(REG_VCOUNT_OFF) = (u16)line;
     beam = line;
     if (line == 160) {
+        /* The visible picture is complete: present it before the VBlank handler starts updating
+         * OAM/VRAM/palettes for the next frame. */
+        hal_video_present();
         hal_dma_vblank();
         if (irq_enabled(IE_VBLANK, DISPSTAT_VBLANK_INTR)) raise_irq(IE_VBLANK, gIntrTable.vBlank);
     }
 }
 
+static u64 t_game_start, t_render;
+
 static void finish_frame(void) {
-    hal_video_present();
     hal_input_poll();
     hal_frame_count++;
-    if ((hal_frame_count % 60) == 0) {
+    hal_prof_frame_end();
+    {
         extern u32 gCallbackQueue[]; /* struct CallbackQueue: current[1] is the scene handler */
-        hal_log("frame %lu DISPCNT=%04x scene=%08lx\n", (unsigned long)hal_frame_count, IO16(0),
-                (unsigned long)gCallbackQueue[1]);
+        static u32 last_scene;
+        if (gCallbackQueue[1] != last_scene) {
+            last_scene = gCallbackQueue[1];
+            hal_log("SCENE frame=%lu handler=%08lx\n", (unsigned long)hal_frame_count, (unsigned long)last_scene);
+        }
     }
+    if (!hal_max_frames) hal_max_frames = hal_test_end_frame();
     if ((hal_max_frames && hal_frame_count >= hal_max_frames) || hal_input_quit_requested()) {
         hal_log("stopping after %lu frames\n", (unsigned long)hal_frame_count);
 #ifdef HAL_FREEZE
@@ -106,7 +115,11 @@ static void finish_frame(void) {
 /* Finish the current line (draw it, run HBlank) and move to the next one. */
 static void beam_step(void) {
     int line = beam;
-    if (line < 160) hal_video_render_line(line);
+    if (line < 160) {
+        u64 t0 = hal_now_us();
+        hal_video_line(line);
+        t_render += hal_now_us() - t0;
+    }
     IO16(REG_DISPSTAT_OFF) |= DISPSTAT_HBLANK;
     if (line < 160) hal_dma_hblank();
     if ((IO16(REG_DISPSTAT_OFF) & DISPSTAT_VCOUNT) && irq_enabled(IE_VCOUNT, DISPSTAT_VCOUNT_INTR))
@@ -118,11 +131,16 @@ static void beam_step(void) {
 }
 
 void VBlankIntrWait(void) {
+    u64 t_enter = hal_now_us();
+    if (t_game_start) hal_prof.game_us += (u32)(t_enter - t_game_start);
+    t_render = 0;
     INTR_CHECK &= ~IE_VBLANK;
     /* Run to the start of the next VBlank (the VBlank handler runs on entering line 160). */
     do {
         beam_step();
     } while (beam != 160);
+    hal_prof.render_us += (u32)t_render;
+    t_game_start = hal_now_us();
 }
 
 void hal_wait_vcount(int line) {

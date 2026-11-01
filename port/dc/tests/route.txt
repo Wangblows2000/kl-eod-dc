@@ -1,0 +1,41 @@
+# Regression route: boot -> Namco logo -> title -> file select -> vision select -> world map ->
+# vision select -> Vision 1-1 text box -> gameplay (run right, jump, grab).
+# Frame numbers are game frames; input is frame-indexed, so every build sees the same states.
+# Scene frames (from tests/explore.txt): Namco 49, title 370, file select 774, vision-select
+# transition 1069, world map 1237, vision select 1834, text box 1953.
+press 300 4 START
+press 450 4 START
+press 600 4 START
+press 750 4 A
+press 900 4 START
+press 1050 4 A
+press 1200 4 START
+press 1350 4 A
+press 1500 4 A
+press 1650 4 A
+press 1800 4 START
+press 1950 4 A
+press 2100 4 A
+press 2250 4 A
+press 2400 4 A
+press 2550 4 A
+press 2700 4 A
+press 2850 150 RIGHT
+press 2900 4 A
+press 3000 150 RIGHT
+press 3060 4 B
+press 3150 20 A
+dump 200   # Namco logo
+dump 560   # title screen
+dump 900   # file select
+dump 1180  # vision select (first visit)
+dump 1300  # world map
+dump 1700  # world map -> vision select
+dump 1900  # vision select
+dump 2000  # vision 1-1 text box
+dump 2500  # gameplay
+dump 2800  # gameplay
+dump 2950  # gameplay: running right
+dump 3100  # gameplay: running right after jump
+dump 3200  # gameplay
+end 3260

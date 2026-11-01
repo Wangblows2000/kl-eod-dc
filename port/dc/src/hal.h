@@ -48,10 +48,40 @@ void hal_dma_vblank(void);
 extern volatile u32 hal_frame_count;
 void hal_frame_init(void);
 
-/* hal_video.c */
+/* Renderers. hal_video.c dispatches to the selected backend:
+ *   HAL_RENDER_SW  -- reference scanline software renderer (hal_video_sw.c)
+ *   HAL_RENDER_PVR -- PowerVR renderer (hal_video_pvr.c)
+ * Selected at boot (build default HAL_DEFAULT_RENDERER, or hold Y while booting for the other one). */
+enum { HAL_RENDER_SW = 0, HAL_RENDER_PVR = 1 };
+extern int hal_renderer;
 void hal_video_init(void);
-void hal_video_render_line(int line);
-void hal_video_present(void);
+void hal_video_line(int line); /* called for each visible line, before its HBlank */
+void hal_video_present(void);  /* called once per frame, after line 227 */
+
+/* software renderer */
+extern u16 hal_sw_frame[160][240]; /* last rendered frame, BGR555 */
+void hal_sw_init(void);
+void hal_sw_render_line(int line);
+void hal_sw_present(void);
+
+/* PowerVR renderer */
+void hal_pvr_init(void);
+void hal_pvr_line(int line);
+void hal_pvr_present(void);
+void hal_pvr_readback(u16 *dst); /* 240x160 BGR555 of the last presented frame */
+
+/* hal_test.c */
+typedef unsigned long long u64;
+struct hal_prof {
+    u32 frames, frame_us, worst_us, game_us, render_us, submit_us, tex_us, wait_us;
+};
+extern struct hal_prof hal_prof;
+u64 hal_now_us(void);
+void hal_prof_frame_end(void);
+u16 hal_test_keys(u32 frame);
+int hal_test_dump_due(u32 frame);
+u32 hal_test_end_frame(void);
+void hal_test_dump(const char *tag, u32 frame, const u16 *pix);
 
 /* hal_input.c */
 void hal_input_poll(void); /* writes REG_KEYINPUT */

@@ -1,6 +1,7 @@
 /* Dreamcast entry point: replaces the GBA crt0 (asm/crt0.s). Maps the GBA address space, puts
  * the hardware registers in their post-BIOS state, and hands control to the game's own
  * AgbMain(), which never returns. */
+#include <dc/scif.h>
 #include <kos.h>
 
 #include "hal.h"
@@ -30,6 +31,11 @@ static void *watchdog(void *p) {
 int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
+#ifdef HAL_FAST_SERIAL
+    /* Test builds: frame dumps are ~100 KB each, so raise the serial rate from 115200. */
+    scif_set_parameters(HAL_FAST_SERIAL, 1);
+    scif_init();
+#endif
     hal_log("klonoa-dc: boot\n");
     if (hal_mem_init() < 0) {
         hal_log("klonoa-dc: fatal: memory mapping failed\n");
@@ -46,7 +52,9 @@ int main(int argc, char **argv) {
     hal_max_frames = HAL_MAX_FRAMES;
 #endif
     game_thread = thd_get_current();
+#ifndef HAL_FAST_SERIAL /* scripted runs report through PERF/SCENE lines; keep dumps unbroken */
     thd_create(true, watchdog, NULL);
+#endif
     hal_log("klonoa-dc: entering AgbMain\n");
     AgbMain();
     return 0;

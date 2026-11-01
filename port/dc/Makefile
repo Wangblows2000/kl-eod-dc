@@ -7,7 +7,7 @@
 # The GBA build (root Makefile) is untouched. This Makefile only reads kleod's src/, include/,
 # asm/data/ and the user's baserom.gba, and writes everything under port/dc/build/.
 
-ROOT    := $(abspath ../..)
+ROOT    ?= $(abspath ../..)
 BUILD   := $(abspath build)
 TARGET  := $(BUILD)/klonoa-dc.elf
 
@@ -33,7 +33,15 @@ HAL_SRCS := $(wildcard src/*.c)
 GAME_OBJS := $(patsubst $(ROOT)/src/%.c,$(BUILD)/game/%.o,$(GAME_SRCS))
 DATA_OBJS := $(patsubst $(ROOT)/src/data/%.c,$(BUILD)/data/%.o,$(DATA_CSRCS)) \
              $(patsubst $(ROOT)/asm/data/%.s,$(BUILD)/data/%_s.o,$(DATA_SSRCS))
-HAL_OBJS  := $(patsubst src/%.c,$(BUILD)/hal/%.o,$(HAL_SRCS)) $(BUILD)/hal/rom_blob.o $(BUILD)/hal/code_ptr_fixups.o
+HAL_OBJS  := $(patsubst src/%.c,$(BUILD)/hal/%.o,$(HAL_SRCS)) $(BUILD)/hal/rom_blob.o $(BUILD)/hal/code_ptr_fixups.o \
+             $(BUILD)/hal/test_script.o
+
+# Build options (they are baked into $(BUILD)/options.h; changing one rebuilds the HAL):
+#   RENDERER=sw|pvr   default renderer (hold Y at boot for the other)
+#   SCRIPT=tests/x.txt  input/dump script for automated runs
+#   MAX_FRAMES=N  AUTOPLAY=K  FREEZE=1  test controls (see README)
+RENDERER ?= pvr
+OPTIONS := RENDERER=$(RENDERER) PVRDBG=$(PVRDBG) SCRIPT=$(SCRIPT) MAX_FRAMES=$(MAX_FRAMES) AUTOPLAY=$(AUTOPLAY) FREEZE=$(FREEZE)
 
 INC     := $(BUILD)/include
 GAME_CPPFLAGS := -nostdinc -I $(ROOT)/tools/agbcc/include -iquote $(INC) -DREVISION=0 -DENGLISH -DPLATFORM_DREAMCAST
@@ -42,7 +50,7 @@ GAME_CPPFLAGS := -nostdinc -I $(ROOT)/tools/agbcc/include -iquote $(INC) -DREVIS
 GAME_CFLAGS := $(filter-out -Werror%,$(KOS_CFLAGS)) -std=gnu89 -fno-strict-aliasing -fwrapv \
                -fno-aggressive-loop-optimizations -fno-delete-null-pointer-checks -w
 
-.PHONY: all clean census
+.PHONY: all clean census FORCE
 all: $(TARGET)
 
 # ---- header overlay: kleod include/ + port/dc/include on top --------------------------------
@@ -76,9 +84,26 @@ $(BUILD)/data/%_s.o: $(ROOT)/asm/data/%.s
 	$(OBJCOPY) --prefix-symbols=_ $(BUILD)/data/$*_s.raw.o $@
 
 # ---- hardware abstraction layer ----------------------------------------------------------
-$(BUILD)/hal/%.o: src/%.c $(INC)/.stamp $(wildcard src/*.h)
+$(BUILD)/options.h: FORCE
 	@mkdir -p $(dir $@)
-	$(CC) $(KOS_CFLAGS) -O2 -Wall $(if $(MAX_FRAMES),-DHAL_MAX_FRAMES=$(MAX_FRAMES)) $(if $(AUTOPLAY),-DHAL_AUTOPLAY=$(AUTOPLAY)) $(if $(FREEZE),-DHAL_FREEZE) -DPLATFORM_DREAMCAST -c $< -o $@
+	@{ echo '/* $(OPTIONS) */'; \
+	   echo '#define HAL_DEFAULT_RENDERER $(if $(filter sw,$(RENDERER)),0,1)'; \
+	   $(if $(MAX_FRAMES),echo '#define HAL_MAX_FRAMES $(MAX_FRAMES)';) \
+	   $(if $(AUTOPLAY),echo '#define HAL_AUTOPLAY $(AUTOPLAY)';) \
+	   $(if $(FREEZE),echo '#define HAL_FREEZE 1';) \
+	   $(if $(SCRIPT),echo '#define HAL_FAST_SERIAL 1562500';) \
+	   $(if $(PVRDBG),echo '#define HAL_PVR_DEBUG $(PVRDBG)';) true; } > $@.tmp
+	@cmp -s $@.tmp $@ || mv $@.tmp $@; rm -f $@.tmp
+
+$(BUILD)/hal/%.o: src/%.c $(INC)/.stamp $(wildcard src/*.h) $(BUILD)/options.h
+	@mkdir -p $(dir $@)
+	$(CC) $(KOS_CFLAGS) -O2 -Wall -include $(BUILD)/options.h -DPLATFORM_DREAMCAST -c $< -o $@
+
+$(BUILD)/hal/test_script.c: tools/script2c.py $(SCRIPT) $(BUILD)/options.h
+	@mkdir -p $(dir $@)
+	python3 tools/script2c.py $@ $(SCRIPT)
+$(BUILD)/hal/test_script.o: $(BUILD)/hal/test_script.c
+	$(CC) $(KOS_CFLAGS) -O2 -c $< -o $@
 
 $(BUILD)/hal/rom_blob.o: src/rom_blob.S $(ROOT)/baserom.gba
 	@mkdir -p $(dir $@)

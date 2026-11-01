@@ -1,0 +1,9 @@
+press 300 4 START
+press 450 4 START
+press 600 4 START
+press 750 4 A
+press 900 4 START
+press 1050 4 A
+press 1200 4 START
+press 1350 4 A
+end 1600
