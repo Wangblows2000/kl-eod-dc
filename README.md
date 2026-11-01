@@ -11,6 +11,7 @@ built from it stays on your machine.
 - Runs the original game logic, at 59.8 fps in gameplay.
 - PowerVR renderer by default; the software renderer is a fallback (hold **Y** at boot).
 - Music, sound effects and PSG voices through the AICA; `AUDIO=0` builds a silent port.
+- Klonoa on the VMU screens in gameplay, a walking Moo on menus, from the game's own sprites.
 - **Tested in the Flycast emulator only, never on a real Dreamcast.**
 
 ## Make a disc image (CDI)
@@ -65,6 +66,8 @@ are described at the top of `port/dc/Makefile`.
   `port/dc/tools/flycast-test-hooks.patch`).
 - `make -C port/dc test-audio` and `port/dc/tools/m4a_difftest/difftest.py` — the sound model
   and the sound engine against the original ROM code, on the host.
+- `make -C port/dc test-vmu-lcd` and `port/dc/tools/vmulcd.py` — the VMU screen character, on the
+  host and in flycast.
 
 The reports have the exact commands and results.
 
@@ -73,3 +76,4 @@ The reports have the exact commands and results.
 - [Report 1](docs/dreamcast-port-report.md) — first boot, the hardware layer, what kleod provides.
 - [Report 2](docs/powervr-renderer.md) — the PowerVR renderer.
 - [Report 3](docs/audio.md) — sound; §8 covers the fix for the muffled, crunchy output.
+- [Report 4](docs/vmu-lcd.md) — Klonoa and the Moo on the VMU screen.
