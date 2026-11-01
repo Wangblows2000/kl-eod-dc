@@ -70,6 +70,7 @@ void hal_pvr_init(void);
 void hal_pvr_line(int line);
 void hal_pvr_present(void);
 void hal_pvr_readback(u16 *dst); /* 240x160 BGR555 of the last presented frame */
+void hal_pvr_report_features(void);
 
 /* hal_test.c */
 typedef unsigned long long u64;

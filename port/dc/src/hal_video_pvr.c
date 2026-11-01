@@ -60,6 +60,16 @@ static s32 affx[2], affy[2];
 static u32 last_bgx[2], last_bgy[2];
 static u32 unsupported_seen;
 
+/* Frames in which each GBA feature was in use (printed by hal_pvr_report_features). */
+enum { F_WIN, F_ALPHA, F_SEMI_OBJ, F_FADE_PAL, F_FADE_VTX, F_AFFINE_BG, F_AFFINE_OBJ, F_LINE_FX, F_BPP8_BG, F_MOSAIC,
+       F_OBJWIN, F_OBJ_MOSAIC, F_COUNT };
+static const char *const feature_name[F_COUNT] = {"windows", "alpha blend", "semi-transparent OBJ",
+    "brightness (palette, exact)", "brightness (per-layer vertex colour)", "affine BG", "affine OBJ",
+    "BG registers changed mid-frame", "8bpp BG", "BG mosaic", "OBJ window (not drawn)", "OBJ mosaic (not drawn)"};
+static u32 feature_frames[F_COUNT];
+static u32 feature_now;
+#define USE(f) (feature_now |= 1u << (f))
+
 static s32 sext28(u32 v) { return (s32)(v << 4) >> 4; }
 
 static int in_vrange(u16 v, int line) {
@@ -125,6 +135,7 @@ static int same_run(const struct lstate *a, const struct lstate *b, int layer) {
 }
 
 static int bg_exists(int mode, int n);
+static int bg_is_affine(int mode, int n);
 
 /* ---- textures ---------------------------------------------------------------------------- */
 
@@ -301,6 +312,77 @@ static void sync_affine_bg(int n, u16 cnt) {
     b->synced = sync_gen;
 }
 
+/* ---- BG mosaic --------------------------------------------------------------------------- */
+/* A mosaic BG is drawn from a small texture holding one texel per mosaic block: the BG pixel at the
+ * block's top-left screen position, fetched from the VRAM mirror with the registers of the block's
+ * first line (so HBlank and affine state are honoured). One quad then magnifies it by the block
+ * size with nearest filtering, which is exactly the GBA's mosaic. */
+#define MOS 128 /* >= 240/2 x 160/2 blocks */
+static pvr_ptr_t mostex[4];
+static u8 mosbuf[MOS * MOS] __attribute__((aligned(32)));
+static int mos_active[4], mos_bw, mos_bh;
+
+static u8 bg_pixel(const struct lstate *s, int n, int x, int y, int line_in_run) {
+    u16 cnt = s->bgcnt[n];
+    u32 charbase = ((cnt >> 2) & 3) * 0x4000, screenbase = ((cnt >> 8) & 0x1F) * 0x800;
+    int mode = s->dispcnt & 7;
+    if (!bg_is_affine(mode, n)) {
+        int size = cnt >> 14, wt = (size & 1) ? 64 : 32, ht = (size & 2) ? 64 : 32;
+        int px = (x + s->hofs[n]) & (wt * 8 - 1), py = (y + s->vofs[n]) & (ht * 8 - 1);
+        int tx = px >> 3, ty = py >> 3, fx = px & 7, fy = py & 7;
+        u32 block = (u32)((tx >> 5) + (ty >> 5) * (wt >> 5));
+        u16 e = *(const u16 *)(vram_shadow + screenbase + block * 0x800 + ((ty & 31) * 32 + (tx & 31)) * 2);
+        if (e & 0x400) fx = 7 - fx;
+        if (e & 0x800) fy = 7 - fy;
+        if (cnt & 0x80) return vram_shadow[(charbase + (e & 0x3FF) * 64 + fy * 8 + fx) % 0x10000];
+        {
+            u8 b = vram_shadow[(charbase + (e & 0x3FF) * 32 + fy * 4 + (fx >> 1)) % 0x10000];
+            u8 c = (fx & 1) ? b >> 4 : b & 15;
+            return c ? (u8)(c | (e >> 12) << 4) : 0;
+        }
+    } else {
+        int a = n - 2, sz = 128 << (cnt >> 14), tiles = sz >> 3;
+        s32 tx = (s->refx[a] + s->pa[a] * x + s->pb[a] * line_in_run) >> 8;
+        s32 ty = (s->refy[a] + s->pc[a] * x + s->pd[a] * line_in_run) >> 8;
+        u8 tile;
+        if (cnt & 0x2000) {
+            tx &= sz - 1;
+            ty &= sz - 1;
+        } else if (tx < 0 || ty < 0 || tx >= sz || ty >= sz) {
+            return 0;
+        }
+        tile = vram_shadow[screenbase + (ty >> 3) * tiles + (tx >> 3)];
+        return vram_shadow[(charbase + tile * 64 + (ty & 7) * 8 + (tx & 7)) % 0x10000];
+    }
+}
+
+static void build_mosaic(int n) {
+    int bx, by, i;
+    if (!mostex[n]) mostex[n] = pvr_mem_malloc(MOS * MOS);
+    if (!mostex[n]) return;
+    memset(mosbuf, 0, sizeof mosbuf);
+    for (by = 0; by * mos_bh < H; by++) {
+        const struct lstate *s = &lines[by * mos_bh];
+        for (bx = 0; bx * mos_bw < W; bx++) {
+            u8 c = 0;
+            if ((s->dispcnt & (0x100 << n)) && bg_exists(s->dispcnt & 7, n)) c = bg_pixel(s, n, bx * mos_bw, by * mos_bh, 0);
+            mosbuf[spread(by) | spread(bx) << 1] = c;
+        }
+    }
+    for (i = 0; i < MOS * MOS; i += 64) upload64((u8 *)mostex[n] + i, mosbuf + i);
+}
+
+static void plan_mosaic(void) {
+    const struct lstate *s = &lines[0];
+    int n;
+    mos_bw = (s->mosaic & 15) + 1;
+    mos_bh = ((s->mosaic >> 4) & 15) + 1;
+    for (n = 0; n < 4; n++) {
+        mos_active[n] = (s->bgcnt[n] & 0x40) && (mos_bw > 1 || mos_bh > 1);
+        if (mos_active[n]) build_mosaic(n);
+    }
+}
+
 static u16 pal_shadow[512];
 static u16 pal_sent[512];
 static int pal_valid;
@@ -355,7 +437,13 @@ static void plan_fade(void) {
         if (lines[y].bldcnt != s->bldcnt || lines[y].bldy != s->bldy) return;
     for (y = 0; y < H; y++) {
         const struct lstate *t = &lines[y];
-        if (t->dispcnt & 0xE000) return; /* windows may mask the effect */
+        if (t->dispcnt & 0xE000) {
+            /* Windows only matter if some visible region has the effect switched off. */
+            if (!(t->winout & 0x20)) return;
+            if ((t->dispcnt & 0x2000) && t->inwin[0] && !(t->winin & 0x20)) return;
+            if ((t->dispcnt & 0x4000) && t->inwin[1] && !(t->winin & 0x2000)) return;
+            if (t->dispcnt & 0x8000) return; /* OBJ window: not modelled */
+        }
         mode = t->dispcnt & 7;
         for (l = 0; l < 4; l++) {
             int on = (t->dispcnt & (0x100 << l)) && bg_exists(mode, l), tg;
@@ -391,7 +479,7 @@ static u32 cur_argb = 0xFFFFFFFF;
 static u32 prims;
 
 /* Texture sources for headers. */
-enum { SRC_NONE, SRC_OBJ4, SRC_OBJ8, SRC_BG0, SRC_BG1, SRC_BG2, SRC_BG3 };
+enum { SRC_NONE, SRC_OBJ4, SRC_OBJ8, SRC_BG0, SRC_BG1, SRC_BG2, SRC_BG3, SRC_MOS0 };
 
 static u32 cur_oargb; /* offset colour (used for brightness increase) */
 static int cur_spec;  /* 1 when the next header must enable the offset colour */
@@ -411,6 +499,9 @@ static void use_header(int src, int pal, int translucent, u32 alpha8) {
     } else if (src == SRC_OBJ8) {
         pvr_poly_cxt_txr(&cxt, cur_list, PVR_TXRFMT_PAL8BPP | PVR_TXRFMT_8BPP_PAL(3) | PVR_TXRFMT_TWIDDLED, 256, 256,
                          obj8, PVR_FILTER_NONE);
+    } else if (src >= SRC_MOS0) {
+        pvr_poly_cxt_txr(&cxt, cur_list, PVR_TXRFMT_PAL8BPP | PVR_TXRFMT_8BPP_PAL(pal) | PVR_TXRFMT_TWIDDLED, MOS, MOS,
+                         mostex[src - SRC_MOS0], PVR_FILTER_NONE);
     } else {
         struct bgtex *b = &bgt[src - SRC_BG0];
         pvr_poly_cxt_txr(&cxt, cur_list, PVR_TXRFMT_PAL8BPP | PVR_TXRFMT_8BPP_PAL(pal) | PVR_TXRFMT_TWIDDLED, b->w, b->h,
@@ -522,7 +613,11 @@ static int segments(const struct lstate *s, struct seg *out) {
         out[0] = (struct seg){0, W, 0x3F};
         return 1;
     }
-    if (dc & 0x8000) unsupported_seen |= 1; /* OBJ window: treated as "outside" */
+    USE(F_WIN);
+    if (dc & 0x8000) {
+        unsupported_seen |= 1; /* OBJ window: treated as "outside" */
+        USE(F_OBJWIN);
+    }
     edges[ne++] = 0;
     edges[ne++] = W;
     for (i = 0; i < 2; i++)
@@ -557,6 +652,7 @@ static int segments(const struct lstate *s, struct seg *out) {
 static int layer_blends(const struct lstate *s, int layer, u8 segmask, u32 *alpha8) {
     int eff = (s->bldcnt >> 6) & 3, eva = s->bldalpha & 31;
     if (!(segmask & 0x20) || eff != 1 || !(s->bldcnt & (1 << layer)) || !(s->bldcnt & 0x3F00)) return 0;
+    USE(F_ALPHA);
     if (eva > 16) eva = 16;
     *alpha8 = (u32)(eva * 255 / 16);
     return 1;
@@ -575,6 +671,7 @@ static void layer_colour(const struct lstate *s, int layer, u8 segmask, u32 alph
     {
         u32 m = (u32)(255 * (16 - ey) / 16), k = (u32)(255 * ey / 16);
         cur_argb = (alpha8 << 24) | m << 16 | m << 8 | m;
+        USE(F_FADE_VTX);
         if (eff == 2) {
             cur_oargb = k << 16 | k << 8 | k;
             cur_spec = 1;
@@ -600,13 +697,19 @@ static void draw_bg_run(const struct lstate *s, int n, int y0, int y1, int pass)
         blend = layer_blends(s, n, seg[si].mask, &alpha8);
         if (blend != (pass == 1)) continue;
         layer_colour(s, n, seg[si].mask, alpha8);
-        if (!bg_is_affine(mode, n)) {
+        if (mos_active[n]) {
+            float sx = 1.0f / (mos_bw * MOS), sy = 1.0f / (mos_bh * MOS);
+            USE(F_MOSAIC);
+            use_header(SRC_MOS0 + n, ((cnt & 0x80) || bg_is_affine(mode, n)) ? 2 : 0, blend, alpha8);
+            emit_rect(c.x0, c.y0, c.x1, c.y1, c.x0 * sx, c.y0 * sy, c.x1 * sx, c.y1 * sy, z);
+        } else if (!bg_is_affine(mode, n)) {
             float iw = 1.0f / b->w, ih = 1.0f / b->h;
             use_header(SRC_BG0 + n, (cnt & 0x80) ? 2 : 0, blend, alpha8);
             emit_rect(c.x0, c.y0, c.x1, c.y1, (c.x0 + s->hofs[n]) * iw, (c.y0 + s->vofs[n]) * ih,
                       (c.x1 + s->hofs[n]) * iw, (c.y1 + s->vofs[n]) * ih, z);
         } else {
             int a = n - 2, wrap = (cnt >> 13) & 1, k;
+            USE(F_AFFINE_BG);
             float pa = s->pa[a] / 256.0f, pb = s->pb[a] / 256.0f, pc = s->pc[a] / 256.0f, pd = s->pd[a] / 256.0f;
             float rx = s->refx[a] / 256.0f, ry = s->refy[a] / 256.0f, isz = 1.0f / b->w;
             struct vtx q[4];
@@ -648,7 +751,12 @@ static void draw_sprites_seg(const struct lstate *s, const struct clip *c, int p
             unsupported_seen |= 1;
             continue;
         }
-        if (a0 & 0x1000) unsupported_seen |= 2;
+        if ((a0 & 0x1000) && (s->mosaic & 0xFF00)) { /* OBJ mosaic with a non-zero size: not drawn */
+            unsupported_seen |= 2;
+            USE(F_OBJ_MOSAIC);
+        }
+        if (mode == 1) USE(F_SEMI_OBJ);
+        if (affine) USE(F_AFFINE_OBJ);
         w = obj_w[shape][size];
         h = obj_h[shape][size];
         bw = w << (affine && dbl);
@@ -765,13 +873,17 @@ static void draw_scene(int pass) {
         for (y0 = 0; y0 < H; y0 = y1) {
             const struct lstate *s = &lines[y0];
             int mode = s->dispcnt & 7;
-            for (y1 = y0 + 1; y1 < H && same_run(&lines[y1 - 1], &lines[y1], layer); y1++) {}
+            for (y1 = y0 + 1; y1 < H && same_run(&lines[y1 - 1], &lines[y1], (layer < 4 && mos_active[layer]) ? 4 : layer); y1++) {}
             if (s->dispcnt & 0x80) continue; /* forced blank: drawn as white in the OP pass */
             if (layer < 4) {
                 if (mode > 2 && layer == 0) unsupported_seen |= 4;
-                if ((s->bgcnt[layer] & 0x40) && (s->mosaic & 0xFF) && (s->dispcnt & (0x100 << layer)))
-                    unsupported_seen |= 2;
-                if ((s->dispcnt & (0x100 << layer)) && bg_exists(mode, layer)) draw_bg_run(s, layer, y0, y1, pass);
+
+                if ((s->dispcnt & (0x100 << layer)) && bg_exists(mode, layer)) {
+                    if (y0 > 0 && y1 < H && same_common(&lines[y0 - 1], s) && same_common(&lines[y1 - 1], &lines[y1]))
+                        USE(F_LINE_FX); /* a run bounded on both sides by this layer's own register changes */
+                    if (s->bgcnt[layer] & 0x80) USE(F_BPP8_BG);
+                    draw_bg_run(s, layer, y0, y1, pass);
+                }
             } else {
                 draw_obj_and_effects_run(s, y0, y1, pass);
             }
@@ -871,7 +983,9 @@ void hal_pvr_present(void) {
         if (used[n] & 2) sync_affine_bg(n, lines[H - 1].bgcnt[n]);
         else if (used[n]) sync_text_bg(n, lines[H - 1].bgcnt[n]);
     }
+    plan_mosaic();
     plan_fade();
+    if (fade_mode) USE(F_FADE_PAL);
     if (!((HAL_PVR_DEBUG & 16) && hal_frame_count > 1300)) sync_palette();
     t2 = hal_now_us();
     hal_prof.tex_us += (u32)(t2 - t1);
@@ -917,9 +1031,28 @@ void hal_pvr_present(void) {
     }
     hal_prof.submit_us += (u32)(hal_now_us() - t2);
 
+    {
+        static int was;
+        int now = ((feature_now >> F_MOSAIC) | (feature_now >> F_OBJ_MOSAIC)) & 1;
+        if (now != was) {
+            u16 bgs = 0;
+            int l;
+            for (l = 0; l < 4; l++)
+                if ((lines[0].bgcnt[l] & 0x40) && (lines[0].dispcnt & (0x100 << l))) bgs |= 1 << l;
+            hal_log("pvr: mosaic %s at frame %lu (MOSAIC=%04x, mosaic BGs=%x)\n", now ? "on" : "off",
+                    (unsigned long)hal_frame_count, lines[0].mosaic, bgs);
+            was = now;
+        }
+    }
+    {
+        int f;
+        for (f = 0; f < F_COUNT; f++)
+            if (feature_now & (1u << f)) feature_frames[f]++;
+        feature_now = 0;
+    }
     if (unsupported_seen & ~reported) {
         if (unsupported_seen & 1) hal_log("pvr: OBJ window used (not implemented)\n");
-        if (unsupported_seen & 2) hal_log("pvr: mosaic used (not implemented)\n");
+        if (unsupported_seen & 2) hal_log("pvr: OBJ mosaic used (not implemented)\n");
         if (unsupported_seen & 4) hal_log("pvr: bitmap mode used (not implemented)\n");
         if (unsupported_seen & 8) hal_log("pvr: BG switches text/affine within a frame\n");
         reported |= unsupported_seen;
@@ -944,6 +1077,12 @@ void hal_pvr_present(void) {
  * VRAM area; pvr_get_front_buffer() returns it translated for the 64-bit area, so undo that.
  * Needs flycast's framebuffer emulation (-config config:rend.EmulateFramebuffer=yes): by default
  * flycast draws straight to the host window and never writes the picture back into VRAM. */
+void hal_pvr_report_features(void) {
+    int f;
+    hal_log("FEATURES frames using each GBA effect (of %lu):\n", (unsigned long)hal_frame_count);
+    for (f = 0; f < F_COUNT; f++) hal_log("FEATURE %s: %lu\n", feature_name[f], (unsigned long)feature_frames[f]);
+}
+
 void hal_pvr_readback(u16 *dst) {
     const volatile u16 *fb;
     u32 front, frame;

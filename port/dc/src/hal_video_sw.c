@@ -5,7 +5,7 @@
  * Lines are rendered between the game's HBlank handlers (hal_frame), so per-line raster effects
  * work. Supported: modes 0-2 (text and affine BGs), regular and affine sprites (1D/2D mapping,
  * 4/8bpp, semi-transparent, OBJ window), priorities, WIN0/WIN1/OBJWIN, alpha blending and
- * brightness increase/decrease, forced blank. Not yet: mosaic, bitmap modes 3-5.
+ * brightness increase/decrease, BG mosaic, forced blank. Not yet: OBJ mosaic, bitmap modes 3-5.
  *
  * Output: hal_sw_frame (240x160 BGR555); hal_sw_present() scales it 2x into the 640x480 RGB565
  * framebuffer at (80, 80).
@@ -131,6 +131,29 @@ static void affine_bg(int n) {
     }
     affx[n] += BGPB(n);
     affy[n] += BGPD(n);
+}
+
+/* BG mosaic (MOSAIC bits 0-7, BGxCNT bit 6): a pixel shows the BG pixel at the top-left of its
+ * block. Vertically, lines inside a block reuse the line computed at the block's first line
+ * (blocks are counted from screen line 0); horizontally, x is rounded down to the block. */
+static u16 mos_line[4][W];
+static u8 mos_opaque[4][W];
+
+static void bg_mosaic(const int *bg_on, int line) {
+    u16 m = IO16(0x04C);
+    int bw = (m & 15) + 1, bh = ((m >> 4) & 15) + 1, n, x;
+    if (bw == 1 && bh == 1) return;
+    for (n = 0; n < 4; n++) {
+        if (!bg_on[n] || !(BGCNT(n) & 0x40)) continue;
+        if (line % bh == 0) {
+            memcpy(mos_line[n], bgline[n], sizeof mos_line[n]);
+            memcpy(mos_opaque[n], bgopaque[n], sizeof mos_opaque[n]);
+        }
+        for (x = 0; x < W; x++) {
+            bgline[n][x] = mos_line[n][x - x % bw];
+            bgopaque[n][x] = mos_opaque[n][x - x % bw];
+        }
+    }
 }
 
 static const u8 obj_w[3][4] = {{8, 16, 32, 64}, {16, 32, 32, 64}, {8, 8, 16, 32}};
@@ -276,6 +299,7 @@ void hal_sw_render_line(int line) {
             if (mode >= 1) affine_latch(n, line);
             if (bg_aff[n]) affine_bg(n);
         }
+        bg_mosaic(bg_on, line);
     }
     if (dc & 0x1000) sprites(line);
     else {

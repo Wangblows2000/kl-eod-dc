@@ -28,11 +28,17 @@ press 3150 20 A
 dump 200   # Namco logo
 dump 560   # title screen
 dump 900   # file select
+dump 1085  # mosaic transition (file select -> vision select)
 dump 1180  # vision select (first visit)
+dump 1245  # mosaic transition into the world map (large blocks)
+dump 1258  # mosaic transition into the world map
 dump 1300  # world map
-dump 1700  # world map -> vision select
+dump 1360  # mosaic transition (world map -> vision select)
+dump 1700  # story cutscene
 dump 1900  # vision select
 dump 2000  # vision 1-1 text box
+dump 2175  # mosaic transition into Vision 1-1
+dump 2200  # Vision 1-1 fade-in
 dump 2500  # gameplay
 dump 2800  # gameplay
 dump 2950  # gameplay: running right
