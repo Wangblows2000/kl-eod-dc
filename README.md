@@ -77,14 +77,3 @@ Common options: `RENDERER=sw|pvr`, `AUDIO=0`, `VMULCD=0`, `SCRIPT=tests/<name>.t
   picture against the software renderer.
 - `make -C port/dc test-vmu-lcd` and `port/dc/tools/vmulcd.py` — the VMU screen character, on the
   host and in flycast.
-
-The reports have the exact commands and results.
-
-## Reports
-
-- [Report 1](docs/dreamcast-port-report.md) — first boot, the hardware layer, what kleod provides.
-- [Report 2](docs/powervr-renderer.md) — the PowerVR renderer.
-- [Report 3](docs/audio.md) — sound; §8 covers the fix for the muffled, crunchy output.
-- [Report 4](docs/vmu-lcd.md) — Klonoa and the Moo on the VMU screen.
-- [Report 5](docs/vmu-saves-display.md) — VMU saves and the 3:2 picture in 4:3.
-- [Report 6](docs/vision14-mosaic.md) — Vision 1-4's broken last room: a mosaic buffer overflow.
