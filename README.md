@@ -16,7 +16,6 @@ built from it stays on your machine.
 - The 3:2 picture is shown at the largest uniform size in the 4:3 640×480 output: 640×426,
   centred, with black bars above and below.
 - Klonoa on the VMU screens in gameplay, a walking Moo on menus, from the game's own sprites.
-- **Tested in the Flycast emulator only, never on a real Dreamcast.**
 
 ## Make a disc image (CDI)
 
