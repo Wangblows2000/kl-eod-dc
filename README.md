@@ -61,19 +61,3 @@ make -C port/dc                                  # -> port/dc/build/klonoa-dc.el
 Common options: `RENDERER=sw|pvr`, `AUDIO=0`, `VMULCD=0`, `SCRIPT=tests/<name>.txt`,
 `MAX_FRAMES=N`, `FREEZE=1`. Test-only options (`AUDIOTEST`, `AUDIOCHECK`, `AUDIOPROBE`,
 `AUDIODUMP`, `STALL`, `GEOMPROBE`, `AUTOPLAY`) are described at the top of `port/dc/Makefile`.
-
-## Tests
-
-- `port/dc/tools/regress.sh` — visual regression in flycast (PowerVR vs software renderer).
-- `port/dc/tools/audio_regress.sh` — sound, stage by stage, in flycast (needs
-  `port/dc/tools/flycast-test-hooks.patch`).
-- `make -C port/dc test-audio` and `port/dc/tools/m4a_difftest/difftest.py` — the sound model
-  and the sound engine against the original ROM code, on the host.
-- `make -C port/dc test-save` and `port/dc/tools/save_regress.sh` — VMU saves against a mock VMU
-  on the host, and through the game's own menus in flycast (new game, restart, damaged copy, no
-  VMU, full VMU).
-- `GEOMPROBE=N` builds and `port/dc/tools/geomcheck.py` — the output geometry, pixel by pixel.
-- `port/dc/tools/vision14_regress.sh` — Vision 1-4 to its end and into Vision 1-5, the PowerVR
-  picture against the software renderer.
-- `make -C port/dc test-vmu-lcd` and `port/dc/tools/vmulcd.py` — the VMU screen character, on the
-  host and in flycast.
